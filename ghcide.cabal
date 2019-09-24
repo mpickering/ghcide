@@ -28,6 +28,7 @@ flag ghc-lib
 library
     default-language:   Haskell2010
     build-depends:
+        fingertree,
         aeson,
         async,
         base == 4.*,
@@ -126,6 +127,8 @@ library
         Development.IDE.LSP.Notifications
         Development.IDE.Spans.AtPoint
         Development.IDE.Spans.Calculate
+        Development.IDE.TypeMap
+        Development.IDE.Compat
         Development.IDE.Spans.Documentation
         Development.IDE.Spans.Type
     ghc-options: -Wall -Wno-name-shadowing

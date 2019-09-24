@@ -33,6 +33,7 @@ import Development.IDE.Spans.Calculate
 import Development.IDE.Import.DependencyInformation
 import Development.IDE.Import.FindImports
 import           Development.IDE.Core.FileStore
+import Development.IDE.TypeMap
 import           Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import Development.IDE.GHC.Util
@@ -108,7 +109,7 @@ getAtPoint file pos = fmap join $ runMaybeT $ do
   opts <- lift getIdeOptions
   files <- transitiveModuleDeps <$> useE GetDependencies file
   tms   <- usesE TypeCheck (file : files)
-  spans <- useE GetSpanInfo file
+  spans <- useE GetHoverMap file
   return $ AtPoint.atPoint opts (map tmrModule tms) spans pos
 
 -- | Goto Definition.
@@ -265,6 +266,17 @@ getSpanInfoRule =
         packageState <- hscEnv <$> use_ GhcSession file
         x <- liftIO $ getSrcSpanInfos packageState fileImports tc
         return ([], Just x)
+
+-- Source SpanInfo is used by AtPoint and Goto Definition.
+getHoverMapRule :: Rules ()
+getHoverMapRule =
+    define $ \GetHoverMap file -> do
+        tc <- use_ TypeCheck file
+        (fileImports, _) <- use_ GetLocatedImports file
+        packageState <- hscEnv <$> use_ GhcSession file
+        x <- liftIO $ runGhcEnv packageState (genTypeMap (tmrModule tc))
+        return ([], Just x)
+
 
 -- Typechecks a module.
 typeCheckRule :: Rules ()

@@ -16,6 +16,7 @@ import Development.IDE.Types.Location
 -- DAML compiler and infrastructure
 import Development.Shake
 import Development.IDE.GHC.Util
+import Development.IDE.TypeMap
 import Development.IDE.GHC.Compat
 import Development.IDE.Types.Options
 import           Development.IDE.Spans.Type as SpanInfo
@@ -52,18 +53,14 @@ gotoDefinition getHieFile ideOpts pkgState srcSpans pos =
 atPoint
   :: IdeOptions
   -> [TypecheckedModule]
-  -> [SpanInfo]
+  -> TypeMap
   -> Position
   -> Maybe (Maybe Range, [T.Text])
-atPoint IdeOptions{..} tcs srcSpans pos = do
-    SpanInfo{..} <- listToMaybe $ orderSpans $ spansAtPoint pos srcSpans
-    ty <- spaninfoType
-    let mbName  = getNameM spaninfoSource
+atPoint IdeOptions{..} tcs (TypeMap ts) pos = do
+    (range, ty) <- listToMaybe (getArtifactsAtPos pos ts)
+    let mbName  = Nothing --getNameM spaninfoSource
         mbDefinedAt = fmap (\name -> "**Defined " <> T.pack (showSDocUnsafe $ pprNameDefnLoc name) <> "**\n") mbName
         docInfo  = maybe [] (\name -> getDocumentation name tcs) mbName
-        range = Range
-                  (Position spaninfoStartLine spaninfoStartCol)
-                  (Position spaninfoEndLine spaninfoEndCol)
         colon = if optNewColonConvention then ":" else "::"
         wrapLanguageSyntax x = T.unlines [ "```" <> T.pack optLanguageSyntax, x, "```"]
         typeSig = wrapLanguageSyntax $ case mbName of

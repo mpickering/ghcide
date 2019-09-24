@@ -27,6 +27,8 @@ import HscTypes (HomeModInfo)
 import Development.IDE.GHC.Compat
 
 import           Development.IDE.Spans.Type
+import           Development.IDE.TypeMap
+import qualified Data.IntervalMap.FingerTree       as IM
 
 
 -- NOTATION
@@ -62,6 +64,9 @@ type instance RuleResult TypeCheck = TcModuleResult
 
 -- | Information about what spans occur where, requires TypeCheck
 type instance RuleResult GetSpanInfo = [SpanInfo]
+
+
+type instance RuleResult GetHoverMap = TypeMap
 
 -- | Convert to Core, requires TypeCheck*
 type instance RuleResult GenerateCore = CoreModule
@@ -116,6 +121,11 @@ data GetSpanInfo = GetSpanInfo
     deriving (Eq, Show, Typeable, Generic)
 instance Hashable GetSpanInfo
 instance NFData   GetSpanInfo
+
+data GetHoverMap = GetHoverMap
+    deriving (Eq, Show, Typeable, Generic)
+instance Hashable GetHoverMap
+instance NFData   GetHoverMap
 
 data GenerateCore = GenerateCore
     deriving (Eq, Show, Typeable, Generic)
