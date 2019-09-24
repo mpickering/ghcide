@@ -25,6 +25,7 @@ module Development.IDE.Core.Rules(
     fileFromParsedModule,
     ) where
 
+import Debug.Trace
 import           Control.Monad.Except
 import Control.Monad.Trans.Maybe
 import Development.IDE.Core.Compile
@@ -274,6 +275,7 @@ getHoverMapRule =
         tc <- use_ TypeCheck file
         (fileImports, _) <- use_ GetLocatedImports file
         packageState <- hscEnv <$> use_ GhcSession file
+        traceM "getHoverMap"
         x <- liftIO $ runGhcEnv packageState (genTypeMap (tmrModule tc))
         return ([], Just x)
 
@@ -343,6 +345,7 @@ mainRule = do
     getDependenciesRule
     typeCheckRule
     getSpanInfoRule
+    getHoverMapRule
     generateCoreRule
     loadGhcSession
     getHieFileRule

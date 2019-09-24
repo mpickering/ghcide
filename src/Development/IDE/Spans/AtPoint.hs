@@ -57,7 +57,7 @@ atPoint
   -> Position
   -> Maybe (Maybe Range, [T.Text])
 atPoint IdeOptions{..} tcs (TypeMap ts) pos = do
-    (range, ty) <- listToMaybe (getArtifactsAtPos pos ts)
+    (range, ty) <- listToMaybe (reverse $ getArtifactsAtPos pos ts)
     let mbName  = Nothing --getNameM spaninfoSource
         mbDefinedAt = fmap (\name -> "**Defined " <> T.pack (showSDocUnsafe $ pprNameDefnLoc name) <> "**\n") mbName
         docInfo  = maybe [] (\name -> getDocumentation name tcs) mbName
