@@ -57,6 +57,7 @@ import           UniqSupply
 import NameCache
 import HscTypes
 import GHC.Generics(Generic)
+import System.Directory as IO
 
 import qualified Development.IDE.Spans.AtPoint as AtPoint
 import Development.IDE.Core.Service
@@ -157,7 +158,7 @@ getLocatedImportsRule =
         let dflags = addRelativeImport pm $ hsc_dflags env
         opt <- getIdeOptions
         (diags, imports') <- fmap unzip $ forM imports $ \(isSource, (mbPkgName, modName)) -> do
-            diagOrImp <- locateModule dflags (optExtensions opt) getFileExists modName mbPkgName isSource
+            diagOrImp <- locateModule dflags (optExtensions opt) (liftIO . IO.doesFileExist . fromNormalizedFilePath) modName mbPkgName isSource
             case diagOrImp of
                 Left diags -> pure (diags, Left (modName, Nothing))
                 Right (FileImport path) -> pure ([], Left (modName, Just path))
@@ -273,7 +274,7 @@ getHoverMapRule :: Rules ()
 getHoverMapRule =
     define $ \GetHoverMap file -> do
         tc <- use_ TypeCheck file
-        (fileImports, _) <- use_ GetLocatedImports file
+--        (fileImports, _) <- use_ GetLocatedImports file
         packageState <- hscEnv <$> use_ GhcSession file
         traceM "getHoverMap"
         x <- liftIO $ runGhcEnv packageState (genTypeMap (tmrModule tc))

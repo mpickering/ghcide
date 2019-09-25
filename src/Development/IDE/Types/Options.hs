@@ -64,7 +64,7 @@ defaultIdeOptions :: IO (FilePath -> Action HscEnvEq) -> IdeOptions
 defaultIdeOptions session = IdeOptions
     {optPreprocessor = (,) []
     ,optGhcSession = session
-    ,optExtensions = ["hs", "lhs"]
+    ,optExtensions = ["hs"]
     ,optPkgLocationOpts = defaultIdePkgLocationOptions
     ,optThreads = 0
     ,optShakeProfiling = Just "/tmp/shake-profiles"
