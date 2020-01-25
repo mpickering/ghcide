@@ -23,6 +23,7 @@ import Development.IDE.Core.Shake
 import Development.IDE.GHC.Util
 import Development.IDE.LSP.Server
 import Development.IDE.Import.DependencyInformation
+import GHC (tm_parsed_module)
 
 
 plugin :: Plugin
@@ -52,7 +53,6 @@ instance Hashable ProduceCompletions
 instance NFData   ProduceCompletions
 instance Binary   ProduceCompletions
 
-
 -- | Generate code actions.
 getCompletionsLSP
     :: LSP.LspFuncs ()
@@ -77,7 +77,7 @@ getCompletionsLSP lsp ide
                 -> return (Completions $ List [])
               (Just pfix', _) -> do
                 let fakeClientCapabilities = ClientCapabilities Nothing Nothing Nothing Nothing
-                Completions . List <$> getCompletions ideOpts cci' (tmrModule tm') pfix' fakeClientCapabilities (WithSnippets True)
+                Completions . List <$> getCompletions ideOpts cci' (tm_parsed_module $ tmrModule tm') pfix' fakeClientCapabilities (WithSnippets True)
               _ -> return (Completions $ List [])
           _ -> return (Completions $ List [])
       _ -> return (Completions $ List [])
