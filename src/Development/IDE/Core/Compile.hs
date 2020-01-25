@@ -148,20 +148,20 @@ compileModule packageState deps tmr =
             (guts, details) <- liftIO $ tidyProgram session desugar
             return (map snd warnings, (mg_safe_haskell desugar, guts, details))
 
-generateByteCode :: HscEnv -> [(ModSummary, HomeModInfo)] -> TcModuleResult -> CgGuts -> IO ([FileDiagnostic], Maybe Linkable)
-generateByteCode hscEnv deps tmr guts =
+generateByteCode :: HscEnv -> [(ModSummary, HomeModInfo)] -> (ModSummary, HomeModInfo) -> CgGuts -> IO ([FileDiagnostic], Maybe Linkable)
+generateByteCode hscEnv deps tmr@(summary, _) guts =
     fmap (either (, Nothing) (second Just)) $
     runGhcEnv hscEnv $
       catchSrcErrors "bytecode" $ do
-          setupEnv (deps ++ [(tmrModSummary tmr, tmrModInfo tmr)])
+          setupEnv (deps ++ [tmr])
           session <- getSession
           (warnings, (_, bytecode, sptEntries)) <- withWarnings "bytecode" $ \tweak ->
 #if MIN_GHC_API_VERSION(8,10,0)
-                liftIO $ hscInteractive session guts (GHC.ms_location $ tweak $ GHC.pm_mod_summary $ GHC.tm_parsed_module $ tmrModule tmr)
+                liftIO $ hscInteractive session guts (GHC.ms_location $ tweak summary)
 #else
-                liftIO $ hscInteractive session guts (tweak $ GHC.pm_mod_summary $ GHC.tm_parsed_module $ tmrModule tmr)
-#endif
           let summary = pm_mod_summary $ tm_parsed_module $ tmrModule tmr
+              liftIO $ hscInteractive session guts (tweak summary)
+#endif
           let unlinked = BCOs bytecode sptEntries
           let linkable = LM (ms_hs_date summary) (ms_mod summary) [unlinked]
           pure (map snd warnings, linkable)
@@ -208,7 +208,7 @@ upgradeWarningToError (nfp, sh, fd) =
 hideDiag :: DynFlags -> (WarnReason, FileDiagnostic) -> (WarnReason, FileDiagnostic)
 hideDiag originalFlags (Reason warning, (nfp, _sh, fd))
   | not (wopt warning originalFlags) = (Reason warning, (nfp, HideDiag, fd))
-hideDiag _originalFlags t = t 
+hideDiag _originalFlags t = t
 
 addRelativeImport :: NormalizedFilePath -> ParsedModule -> DynFlags -> DynFlags
 addRelativeImport fp modu dflags = dflags
