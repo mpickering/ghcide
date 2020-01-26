@@ -27,6 +27,7 @@ module Development.IDE.Core.Rules(
 import Fingerprint
 
 import Data.Binary
+import Data.Bifunctor (second)
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Maybe
@@ -164,7 +165,7 @@ getLocatedImportsRule =
             diagOrImp <- locateModule dflags (optExtensions opt) getFileExists modName mbPkgName isSource
             case diagOrImp of
                 Left diags -> pure (diags, Left (modName, Nothing))
-                Right (FileImport path) -> pure ([], Left (modName, Just path))
+                Right (FileImport path) -> pure ([], Left (modName, Just $ path))
                 Right (PackageImport pkgId) -> liftIO $ do
                     diagsOrPkgDeps <- computePackageDeps env pkgId
                     case diagsOrPkgDeps of
@@ -180,7 +181,7 @@ getLocatedImportsRule =
 -- imports recursively.
 rawDependencyInformation :: NormalizedFilePath -> Action RawDependencyInformation
 rawDependencyInformation f = do
-    let (initialId, initialMap) = getPathId f emptyPathIdMap
+    let (initialId, initialMap) = getPathId (ModLocation (Just $ fromNormalizedFilePath f) "" "") emptyPathIdMap
     go (IntSet.singleton $ getFilePathId initialId)
        (RawDependencyInformation IntMap.empty initialMap)
   where
@@ -198,7 +199,7 @@ rawDependencyInformation f = do
                     let rawDepInfo' = insertImport fId (Left ModuleParseError) rawDepInfo
                     in go fs rawDepInfo'
                   Just (modImports, pkgImports) -> do
-                    let f :: PathIdMap -> (a, Maybe NormalizedFilePath) -> (PathIdMap, (a, Maybe FilePathId))
+                    let f :: PathIdMap -> (a, Maybe ModLocation) -> (PathIdMap, (a, Maybe FilePathId))
                         f pathMap (imp, mbPath) = case mbPath of
                             Nothing -> (pathMap, (imp, Nothing))
                             Just path ->
@@ -273,7 +274,7 @@ getSpanInfoRule =
         tms <- mapMaybe (fmap fst) <$> usesWithStale GetParsedModule (transitiveModuleDeps deps)
         (fileImports, _) <- use_ GetLocatedImports file
         packageState <- hscEnv <$> use_ GhcSession file
-        x <- liftIO $ getSrcSpanInfos packageState fileImports (tmrModule tc) tms
+        x <- liftIO $ getSrcSpanInfos packageState (fmap (second (fmap modLocationToNormalizedFilePath)) $ fileImports) (tmrModule tc) tms
         return ([], Just x)
 
 -- Typechecks a module.
