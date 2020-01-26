@@ -55,6 +55,7 @@ import qualified Data.Text                                as T
 import           Development.IDE.GHC.Error
 import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
+import Development.IDE.Types.Logger (logDebug)
 import Development.IDE.Spans.Type
 import System.IO (fixIO)
 
@@ -377,6 +378,7 @@ getHiFileRule :: Rules ()
 getHiFileRule =
     define $ \GetHiFile f -> do
         session <- hscEnv <$> use_ GhcSession f
+        logger <- actionLogger
         pm <- use_ GetParsedModule f
         let mod = ms_mod $ pm_mod_summary pm
         -- TODO find the hi file without relying on the parsed module
@@ -389,6 +391,7 @@ getHiFileRule =
                     -- TODO it should be possible to construct a ModSummary from a ModIface
                     let modSummary = pm_mod_summary pm
                         result = HiFileResult modSummary iface
+                    liftIO $ logDebug logger $ T.pack $ "Loaded interface file " <> hiFile
                     return ([], Just result)
                 Maybes.Failed err -> do
                     let d = Diagnostic
@@ -396,10 +399,13 @@ getHiFileRule =
                                 _severity = Nothing,
                                 _code = Nothing,
                                 _source = Just "CPP",
-                                _message = T.pack $ showSDoc (hsc_dflags session) err,
+                                _message = errMsg,
                                 _relatedInformation = Nothing
                                 }
+                        errMsg = T.pack $ showSDoc (hsc_dflags session) err
 
+
+                    liftIO $ logDebug logger $ T.pack ("Failed to load interface file " <> hiFile <> ": ") <> errMsg
                     return ([(f, ShowDiag, d)], Nothing)
 
 getModIfaceRule :: Rules ()
