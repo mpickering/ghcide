@@ -123,7 +123,9 @@ filePathToUriInternal' fp = toNormalizedUri $ Uri $ T.pack $ LSP.fileScheme <> "
 
     toNormalizedUri :: Uri -> NormalizedUri
     toNormalizedUri (Uri t) =
-      NormalizedUri $ T.pack $ escapeURIString isUnescapedInURI $ unEscapeString $ T.unpack t
+      NormalizedUri (hash norm_t) norm_t
+        where
+          norm_t = T.pack $ escapeURIString isUnescapedInURI $ unEscapeString $ T.unpack t
 
     platformAdjustToUriPath :: FilePath -> String
     platformAdjustToUriPath srcPath
