@@ -54,6 +54,8 @@ import qualified GHC.Paths
 import HIE.Bios.Environment
 import HIE.Bios
 
+import Debug.Trace
+
 -- Set the GHC libdir to the nix libdir if it's present.
 getLibdir :: IO FilePath
 getLibdir = fromMaybe GHC.Paths.libdir <$> lookupEnv "NIX_GHC_LIBDIR"
@@ -135,10 +137,21 @@ main = do
 
         putStrLn "\nStep 6/6: Type checking the files"
         setFilesOfInterest ide $ Set.fromList $ map toNormalizedFilePath files
-        results <- runActionSync ide $ uses TypeCheck $ map toNormalizedFilePath files
+        results <- runActionSync ide $ uses TypeCheck $ [(toNormalizedFilePath "/home/matt/ghcide/src/Development/IDE/Core/OfInterest.hs")]
         let (worked, failed) = partition fst $ zip (map isJust results) files
         when (failed /= []) $
             putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
+
+
+        putStrLn "\nStep 7/6: Go to definition"
+
+        results <- runActionSync ide $ getAtPoint (toNormalizedFilePath "/home/matt/ghcide/src/Development/IDE/Core/OfInterest.hs") (Position 52 15)
+        traceMarkerIO "start"
+        forM_ [0..1000] $ \_ ->
+          runActionSync ide $ getAtPoint (toNormalizedFilePath "/home/matt/ghcide/src/Development/IDE/Core/OfInterest.hs") (Position 52 15)
+        traceMarkerIO "end"
+        print results
+        print results
 
         let files xs = let n = length xs in if n == 1 then "1 file" else show n ++ " files"
         putStrLn $ "\nCompleted (" ++ files worked ++ " worked, " ++ files failed ++ " failed)"

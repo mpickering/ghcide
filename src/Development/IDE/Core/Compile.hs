@@ -32,7 +32,7 @@ import Development.IDE.Types.Location
 
 import System.IO
 import TcRnMonad
-import TcIface
+import GHC.Iface.Type
 
 #if MIN_GHC_API_VERSION(8,6,0)
 import           DynamicLoading (initializePlugins)
@@ -49,10 +49,9 @@ import           GhcMonad
 import           GhcPlugins                     as GHC hiding (fst3, (<>))
 import qualified HeaderInfo                     as Hdr
 import           HscMain                        (hscInteractive)
-import           MkIface
 import           StringBuffer                   as SB
-import           TidyPgm
-
+import GHC.Iface.Utils
+import GHC.Iface.Tidy
 import Control.Monad.Extra
 import Control.Monad.Except
 import Control.Monad.Trans.Except
@@ -65,6 +64,9 @@ import           Data.Maybe
 import           Data.Tuple.Extra
 import qualified Data.Map.Strict                          as Map
 import           System.FilePath
+
+import           GHC.Iface.Utils
+import GHC.IfaceToCore
 
 
 -- | Given a string buffer, return the string (after preprocessing) and the 'ParsedModule'.

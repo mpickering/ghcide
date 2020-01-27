@@ -66,9 +66,9 @@ import HscTypes
 import DynFlags (xopt)
 import GHC.Generics(Generic)
 import qualified Maybes
-import LoadIface
+import GHC.IfaceToCore
+import GHC.Iface.Load
 import TcRnMonad (initIfaceLoad)
-import TcIface (typecheckIface)
 import Outputable (showSDoc)
 
 import qualified Development.IDE.Spans.AtPoint as AtPoint
@@ -107,6 +107,7 @@ defineNoFile f = define $ \k file -> do
 getDependencies :: NormalizedFilePath -> Action (Maybe [NormalizedFilePath])
 getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 
+{-# NOINLINE getAtPoint #-}
 -- | Try to get hover text for the name under point.
 getAtPoint :: NormalizedFilePath -> Position -> Action (Maybe (Maybe Range, [T.Text]))
 getAtPoint file pos = fmap join $ runMaybeT $ do

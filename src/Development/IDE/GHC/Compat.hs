@@ -37,9 +37,9 @@ import qualified GHC
 import GHC hiding (ClassOpSig, DerivD, ForD, IEThingWith, InstD, TyClD, ValD, ModLocation)
 
 #if MIN_GHC_API_VERSION(8,8,0)
-import HieAst
-import HieBin
-import HieTypes
+import GHC.Iface.Ext.Binary
+import GHC.Iface.Ext.Ast
+import GHC.Iface.Ext.Types
 #else
 import GhcPlugins hiding (ModLocation)
 import NameCache

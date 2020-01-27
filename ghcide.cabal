@@ -158,6 +158,7 @@ executable ghcide
                 -threaded
                 -Wall
                 -Wno-name-shadowing
+                -eventlog
                 -- allow user RTS overrides
                 -rtsopts
                 -- disable idle GC
