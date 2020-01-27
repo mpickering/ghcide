@@ -49,22 +49,37 @@ import Language.Haskell.LSP.Types as LSP (
   )
 import SrcLoc as GHC
 import Text.ParserCombinators.ReadP as ReadP
+import GHC.Generics
 
 
 -- | Newtype wrapper around FilePath that always has normalized slashes.
-newtype NormalizedFilePath = NormalizedFilePath FilePath
-    deriving (Eq, Ord, Show, Hashable, NFData, Binary)
+data NormalizedFilePath = NormalizedFilePath NormalizedUri Int !FilePath
+    deriving (Eq, Ord, Show, Generic)
+
+
+instance Hashable NormalizedFilePath where
+  hash (NormalizedFilePath _ h _) = h
+
+instance NFData NormalizedFilePath where
+instance Binary NormalizedFilePath where
+
+instance NFData NormalizedUri where
+instance Binary NormalizedUri where
+
+
 
 instance IsString NormalizedFilePath where
     fromString = toNormalizedFilePath
 
 toNormalizedFilePath :: FilePath -> NormalizedFilePath
 -- We want to keep empty paths instead of normalising them to "."
-toNormalizedFilePath "" = NormalizedFilePath ""
-toNormalizedFilePath fp = NormalizedFilePath $ normalise fp
+toNormalizedFilePath "" = NormalizedFilePath emptyPathUri (hash ("" :: String)) ""
+toNormalizedFilePath fp =
+  let nfp = normalise fp
+  in NormalizedFilePath (filePathToUriInternal' nfp) (hash nfp) nfp
 
 fromNormalizedFilePath :: NormalizedFilePath -> FilePath
-fromNormalizedFilePath (NormalizedFilePath fp) = fp
+fromNormalizedFilePath (NormalizedFilePath _ _ fp) = fp
 
 -- | We use an empty string as a filepath when we don’t have a file.
 -- However, haskell-lsp doesn’t support that in uriToFilePath and given
@@ -76,10 +91,13 @@ uriToFilePath' uri
     | otherwise = LSP.uriToFilePath uri
 
 emptyPathUri :: NormalizedUri
-emptyPathUri = filePathToUri' ""
+emptyPathUri = filePathToUriInternal' ""
 
 filePathToUri' :: NormalizedFilePath -> NormalizedUri
-filePathToUri' (NormalizedFilePath fp) = toNormalizedUri $ Uri $ T.pack $ LSP.fileScheme <> "//" <> platformAdjustToUriPath fp
+filePathToUri' (NormalizedFilePath u _ _) = u
+
+filePathToUriInternal' :: FilePath -> NormalizedUri
+filePathToUriInternal' fp = toNormalizedUri $ Uri $ T.pack $ LSP.fileScheme <> "//" <> platformAdjustToUriPath fp
   where
     -- The definitions below are variants of the corresponding functions in Language.Haskell.LSP.Types.Uri that assume that
     -- the filepath has already been normalised. This is necessary since normalising the filepath has a nontrivial cost.
