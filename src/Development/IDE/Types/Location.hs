@@ -53,15 +53,34 @@ import GHC.Generics
 
 
 -- | Newtype wrapper around FilePath that always has normalized slashes.
-data NormalizedFilePath = NormalizedFilePath NormalizedUri Int !FilePath
-    deriving (Eq, Ord, Show, Generic)
+data NormalizedFilePath = NormalizedFilePath NormalizedUriWrapper Int !FilePath
+    deriving (Generic)
+
+instance NFData NormalizedFilePath where
+instance Binary NormalizedFilePath where
+
+instance Show NormalizedFilePath where
+  show (NormalizedFilePath _ _ fp) = "NormalizedFilePath " ++ show fp
+
+instance Eq NormalizedFilePath where
+  (NormalizedFilePath _ h1 _) == (NormalizedFilePath _ h2 _) = h1 == h2
+
+instance Ord NormalizedFilePath where
+  (NormalizedFilePath _ h1 _) `compare` (NormalizedFilePath _ h2 _) = h1 `compare` h2
+
 
 
 instance Hashable NormalizedFilePath where
   hash (NormalizedFilePath _ h _) = h
 
-instance NFData NormalizedFilePath where
-instance Binary NormalizedFilePath where
+-- Just to define NFData and Binary
+newtype NormalizedUriWrapper =
+  NormalizedUriWrapper { unwrapNormalizedFilePath :: NormalizedUri }
+  deriving (Show, Generic)
+
+instance NFData NormalizedUriWrapper where
+instance Binary NormalizedUriWrapper where
+instance Hashable NormalizedUriWrapper where
 
 instance NFData NormalizedUri where
 instance Binary NormalizedUri where
@@ -73,10 +92,10 @@ instance IsString NormalizedFilePath where
 
 toNormalizedFilePath :: FilePath -> NormalizedFilePath
 -- We want to keep empty paths instead of normalising them to "."
-toNormalizedFilePath "" = NormalizedFilePath emptyPathUri (hash ("" :: String)) ""
+toNormalizedFilePath "" = NormalizedFilePath (NormalizedUriWrapper emptyPathUri) (hash ("" :: String)) ""
 toNormalizedFilePath fp =
   let nfp = normalise fp
-  in NormalizedFilePath (filePathToUriInternal' nfp) (hash nfp) nfp
+  in NormalizedFilePath (NormalizedUriWrapper $ filePathToUriInternal' nfp) (hash nfp) nfp
 
 fromNormalizedFilePath :: NormalizedFilePath -> FilePath
 fromNormalizedFilePath (NormalizedFilePath _ _ fp) = fp
@@ -94,7 +113,7 @@ emptyPathUri :: NormalizedUri
 emptyPathUri = filePathToUriInternal' ""
 
 filePathToUri' :: NormalizedFilePath -> NormalizedUri
-filePathToUri' (NormalizedFilePath u _ _) = u
+filePathToUri' (NormalizedFilePath (NormalizedUriWrapper u) _ _) = u
 
 filePathToUriInternal' :: FilePath -> NormalizedUri
 filePathToUriInternal' fp = toNormalizedUri $ Uri $ T.pack $ LSP.fileScheme <> "//" <> platformAdjustToUriPath fp
