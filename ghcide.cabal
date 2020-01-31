@@ -120,7 +120,6 @@ library
         Development.IDE.Plugin
         Development.IDE.Plugin.Completions
         Development.IDE.Plugin.CodeAction
-    other-modules:
         Development.IDE.Core.Debouncer
         Development.IDE.Core.Compile
         Development.IDE.Core.Preprocessor
@@ -139,6 +138,9 @@ library
         Development.IDE.Spans.Type
         Development.IDE.Plugin.Completions.Logic
         Development.IDE.Plugin.Completions.Types
+    other-modules:
+    if impl(ghc > 8.7)
+      other-modules:
     ghc-options: -Wall -Wno-name-shadowing
 
 executable ghcide-test-preprocessor
