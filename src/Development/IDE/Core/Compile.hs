@@ -199,7 +199,6 @@ generateByteCode hscEnv deps tmr guts =
 #endif
           let summary = pm_mod_summary $ tm_parsed_module $ tmrModule tmr
           let unlinked = BCOs bytecode sptEntries
---          pprTraceM "unlinked" (sep $ map (F.foldr (\b r -> ppr b <+> r) empty) (map unlinkedBCOPtrs $ bc_bcos $ bytecode))
           let linkable = LM (ms_hs_date summary) (ms_mod summary) [unlinked]
           pure (map snd warnings, linkable)
 
@@ -211,13 +210,11 @@ instance Outputable BCOPtr  where
 generateObjectCode :: HscEnv -> TcModuleResult -> IO (IdeResult Linkable)
 generateObjectCode hscEnv tmr = do
     (compile_diags, Just (_, guts, _)) <- compileModule hscEnv tmr
-    pprTraceM "COMPILED" (ppr ())
     fmap (either (, Nothing) (second Just)) $
         evalGhcEnv hscEnv $
           catchSrcErrors "object" $ do
               session <- getSession
               let fs = hsc_dflags session
-              pprTraceM "settings" (ppr (show (ghcLink fs), ghcMode fs, show (hscTarget fs)))
               let summary = pm_mod_summary $ tm_parsed_module $ tmrModule tmr
               let dot_o =  ml_obj_file (ms_location summary)
               let session' = session { hsc_dflags = (hsc_dflags session) { outputFile = Just dot_o }}
@@ -229,7 +226,6 @@ generateObjectCode hscEnv tmr = do
                                 (tweak $ summary)
                                 fp
                       compileFile session' StopLn (fp, Just (As False))
-              pprTraceM "dot_o" (text dot_o_fp)
               let unlinked = DotO dot_o_fp
               let linkable = LM (ms_hs_date summary) (ms_mod summary) [unlinked]
               pure (compile_diags ++ map snd warnings, linkable)
