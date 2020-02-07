@@ -17,15 +17,18 @@ module Development.IDE.Core.Compile
   , addRelativeImport
   , mkTcModuleResult
   , generateByteCode
+  , generateObjectCode
   , generateAndWriteHieFile
   , generateAndWriteHiFile
   , getModSummaryFromImports
   , loadHieFile
+  , generateAndWriteOFile
   , loadInterface
   , loadDepModule
   , loadModuleHome
   ) where
 
+import Data.ByteString as BS (ByteString, readFile)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.Preprocessor
 import Development.IDE.Core.Shake
@@ -37,7 +40,10 @@ import Development.IDE.GHC.Util
 import qualified GHC.LanguageExtensions.Type as GHC
 import Development.IDE.Types.Options
 import Development.IDE.Types.Location
+import DriverPhases
 import Outputable
+import HscTypes
+import DriverPipeline hiding (unP)
 
 #if MIN_GHC_API_VERSION(8,6,0)
 import           DynamicLoading (initializePlugins)
@@ -57,13 +63,13 @@ import qualified Development.IDE.GHC.Compat     as Compat
 import           GhcMonad
 import           GhcPlugins                     as GHC hiding (fst3, (<>))
 import qualified HeaderInfo                     as Hdr
-import           HscMain                        (hscInteractive, hscSimplify)
+import           HscMain                        (hscInteractive, hscSimplify, hscGenHardCode)
 import           LoadIface                      (readIface)
 import qualified Maybes
 import           MkIface
 import           NameCache
 import           StringBuffer                   as SB
-import           TcRnMonad (initIfaceLoad, tcg_th_coreplugins)
+import           TcRnMonad
 import           TcIface                        (typecheckIface)
 import           TidyPgm
 
@@ -165,15 +171,12 @@ newtype RunSimplifier = RunSimplifier Bool
 compileModule
     :: RunSimplifier
     -> HscEnv
-    -> [(ModSummary, HomeModInfo)]
     -> TcModuleResult
     -> IO (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
-compileModule (RunSimplifier simplify) packageState deps tmr =
+compileModule (RunSimplifier simplify) packageState tmr =
     fmap (either (, Nothing) (second Just)) $
     evalGhcEnv packageState $
         catchSrcErrors "compile" $ do
-            setupEnv (deps ++ [(tmrModSummary tmr, tmrModInfo tmr)])
-
             let tm = tmrModule tmr
             session <- getSession
             (warnings,desugar) <- withWarnings "compile" $ \tweak -> do
@@ -209,6 +212,28 @@ generateByteCode hscEnv deps tmr guts =
           let unlinked = BCOs bytecode sptEntries
           let linkable = LM (ms_hs_date summary) (ms_mod summary) [unlinked]
           pure (map snd warnings, linkable)
+
+generateObjectCode :: HscEnv -> TcModuleResult -> IO (IdeResult Linkable)
+generateObjectCode hscEnv tmr = do
+    (compile_diags, Just (_, guts, _)) <- compileModule (RunSimplifier True) hscEnv tmr
+    fmap (either (, Nothing) (second Just)) $
+        evalGhcEnv hscEnv $
+          catchSrcErrors "object" $ do
+              session <- getSession
+              let summary = pm_mod_summary $ tm_parsed_module $ tmrModule tmr
+              let dot_o =  ml_obj_file (ms_location summary)
+              let session' = session { hsc_dflags = (hsc_dflags session) { outputFile = Just dot_o }}
+                  fp = replaceExtension dot_o "s"
+              liftIO $ createDirectoryIfMissing True (takeDirectory fp)
+              (warnings, dot_o_fp) <-
+                withWarnings "object" $ \tweak -> liftIO $ do
+                      _ <- hscGenHardCode session guts
+                                (tweak $ summary)
+                                fp
+                      compileFile session' StopLn (fp, Just (As False))
+              let unlinked = DotO dot_o_fp
+              let linkable = LM (ms_hs_date summary) (ms_mod summary) [unlinked]
+              pure (compile_diags ++ map snd warnings, linkable)
 
 demoteTypeErrorsToWarnings :: ParsedModule -> ParsedModule
 demoteTypeErrorsToWarnings =
@@ -323,6 +348,11 @@ handleGenerationErrors dflags source action =
     . (("Error during " ++ T.unpack source) ++) . show @SomeException
     ]
 
+
+generateAndWriteOFile :: HscEnv -> TcModuleResult -> IO [FileDiagnostic]
+generateAndWriteOFile hscEnv tc = do
+    (diags, _) <- generateObjectCode hscEnv tc
+    return diags
 
 -- | Setup the environment that GHC needs according to our
 -- best understanding (!)

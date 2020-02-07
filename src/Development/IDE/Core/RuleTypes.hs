@@ -109,6 +109,9 @@ type instance RuleResult GenerateCore = (SafeHaskellMode, CgGuts, ModDetails)
 -- | Generate byte code for template haskell.
 type instance RuleResult GenerateByteCode = Linkable
 
+-- | Generate object file for template haskell.
+type instance RuleResult GetObjectFile = Linkable
+
 -- | A GHC session that we reuse.
 type instance RuleResult GhcSession = HscEnvEq
 
@@ -204,6 +207,12 @@ data GenerateByteCode = GenerateByteCode
 instance Hashable GenerateByteCode
 instance NFData   GenerateByteCode
 instance Binary   GenerateByteCode
+
+data GetObjectFile = GetObjectFile
+   deriving (Eq, Show, Typeable, Generic)
+instance Hashable GetObjectFile
+instance NFData   GetObjectFile
+instance Binary   GetObjectFile
 
 data GhcSession = GhcSession
     deriving (Eq, Show, Typeable, Generic)
