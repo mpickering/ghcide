@@ -26,7 +26,6 @@ module Development.IDE.Core.Compile
   , loadModuleHome
   ) where
 
-import ByteCodeTypes
 import Data.ByteString as BS (ByteString, readFile)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.Preprocessor
@@ -42,9 +41,7 @@ import Development.IDE.Types.Location
 import DriverPhases
 import Outputable
 import HscTypes
-import Linker
 import DriverPipeline hiding (unP)
-import qualified Data.Foldable as F
 
 #if MIN_GHC_API_VERSION(8,6,0)
 import           DynamicLoading (initializePlugins)
@@ -202,11 +199,6 @@ generateByteCode hscEnv deps tmr guts =
           let linkable = LM (ms_hs_date summary) (ms_mod summary) [unlinked]
           pure (map snd warnings, linkable)
 
-instance Outputable BCOPtr  where
-  ppr (BCOPtrName n) = ppr n
-  ppr _ = empty
-
-
 generateObjectCode :: HscEnv -> TcModuleResult -> IO (IdeResult Linkable)
 generateObjectCode hscEnv tmr = do
     (compile_diags, Just (_, guts, _)) <- compileModule hscEnv tmr
@@ -214,7 +206,6 @@ generateObjectCode hscEnv tmr = do
         evalGhcEnv hscEnv $
           catchSrcErrors "object" $ do
               session <- getSession
-              let fs = hsc_dflags session
               let summary = pm_mod_summary $ tm_parsed_module $ tmrModule tmr
               let dot_o =  ml_obj_file (ms_location summary)
               let session' = session { hsc_dflags = (hsc_dflags session) { outputFile = Just dot_o }}
@@ -222,7 +213,7 @@ generateObjectCode hscEnv tmr = do
               liftIO $ createDirectoryIfMissing True (takeDirectory fp)
               (warnings, dot_o_fp) <-
                 withWarnings "object" $ \tweak -> liftIO $ do
-                      hscGenHardCode session guts
+                      _ <- hscGenHardCode session guts
                                 (tweak $ summary)
                                 fp
                       compileFile session' StopLn (fp, Just (As False))

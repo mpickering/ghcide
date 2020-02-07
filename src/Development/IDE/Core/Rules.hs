@@ -25,8 +25,6 @@ module Development.IDE.Core.Rules(
     ) where
 
 import Fingerprint
-import Outputable(ppr, pprTraceM, text, ($$))
-import HscTypes
 
 import Data.Binary
 import Data.Bifunctor (second)
@@ -436,7 +434,6 @@ generateByteCodeRule =
 
 getObjectFileRule :: Rules ()
 getObjectFileRule = define $ \GetObjectFile f -> do
-  session <- hscEnv <$> use_ GhcSession f
   -- get all dependencies interface files, to check for freshness
   (deps,_)<- use_ GetLocatedImports f
   depHis  <- traverse (use GetObjectFile) (mapMaybe (fmap artifactFilePath . snd) deps)
@@ -457,7 +454,7 @@ getObjectFileRule = define $ \GetObjectFile f -> do
         Nothing -> do
               let d = mkDiag $ "Missing dependencies for object file: " <> oFile
               pure (d, Nothing)
-        Just deps -> do
+        Just _deps -> do
           gotOFile <- getFileExists $ toNormalizedFilePath oFile
           if not gotOFile
             then do
@@ -482,7 +479,7 @@ getObjectFileRule = define $ \GetObjectFile f -> do
       (diags, mtmr) <- typeCheckRuleDefinition f DoGenerateInterfaceFiles
       case mtmr of
         Nothing -> return (raw_diags ++ diags, Nothing)
-        Just tmr -> do
+        Just _tmr -> do
           let linkable = LM (error "don't check") (ms_mod ms) [DotO oFile]
           return ([], Just $ linkable)
 
