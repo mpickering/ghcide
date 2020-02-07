@@ -223,6 +223,7 @@ targetToFile _ (TargetFile f _) = do
 setNameCache :: IORef NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
+
 -- This is the key function which implements multi-component support. All
 -- components mapping to the same hie,yaml file are mapped to the same
 -- HscEnv which is updated as new components are discovered.
@@ -398,6 +399,7 @@ setOptions (ComponentOptions theOpts _) dflags = do
           -- also, it can confuse the interface stale check
           dontWriteHieFiles $
           setHiDir cacheDir $
+          setODir cacheDir $
           setDefaultHieDir cacheDir $
           setIgnoreInterfacePragmas $
           setLinkerOptions $
@@ -430,6 +432,11 @@ setHiDir :: FilePath -> DynFlags -> DynFlags
 setHiDir f d =
     -- override user settings to avoid conflicts leading to recompilation
     d { hiDir      = Just f}
+
+setODir :: FilePath -> DynFlags -> DynFlags
+setODir f d =
+    -- override user settings to avoid conflicts leading to recompilation
+    d { objectDir      = Just f}
 
 getCacheDir :: [String] -> IO FilePath
 getCacheDir opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> opts_hash)
