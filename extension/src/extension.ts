@@ -20,20 +20,30 @@ export function activate(context: ExtensionContext) {
 		window.showErrorMessage("You must specify a hic.executionPath in config");
 		return;
 	}
+
 	let argString = config.get("arguments") as string;
 
-	let args : string[] = argString.split(" ");
+	// doesn't work if you split - you get things like 'Invalid option `--lsp''
+	//let args : string[] = argString.split(" ");
+
+	let workingDirectory = config.get("workingDirectory") as string;
+
+	let serverOptions = {
+		args: [argString],
+		command: cPath,
+		options: {
+			cwd: workingDirectory !== undefined ? workingDirectory : workspace.rootPath
+		}
+	};
 
 	let clientOptions: LanguageClientOptions = {
 		// Register the server for plain text documents
 		documentSelector: ["haskell"]
 	};
-	client = new LanguageClient(
-		'haskell',
-		'ghcide',
-		{ args: args, command: cPath, options: {cwd: workspace.rootPath }}, clientOptions, true);
+
+	client = new LanguageClient('haskell', 'ghcide', serverOptions, clientOptions, true);
     client.registerProposedFeatures();
-	
+
 	client.start();
 }
 

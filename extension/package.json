@@ -7,7 +7,7 @@
 		"url": "https://github.com/digital-asset/ghcide.git"
 	},
 	"description": "A simple extension to test out haskell ide core",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"license": "Apache-2.0",
 	"engines": {
 		"vscode": "^1.35.0"
@@ -43,7 +43,11 @@
 				"hic.arguments": {
 					"type": "string",
 					"default": "--lsp",
-					"description": "The arguments you would like to pass to the executable"
+					"description": "The arguments you would like to pass to the ghcide executable"
+				},
+				"hic.workingDirectory": {
+					"type": "string",
+					"description": "The working directory that ghcide should use with --cwd"
 				}
 			}
 		}
