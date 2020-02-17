@@ -31,6 +31,7 @@ export function activate(context: ExtensionContext) {
 	let serverOptions = {
 		args: [argString],
 		command: cPath,
+    workspaceFolder: workingDirectory !== undefined ? workingDirectory : workspace.rootPath,
 		options: {
 			cwd: workingDirectory !== undefined ? workingDirectory : workspace.rootPath
 		}
