@@ -8,6 +8,8 @@
 
 module Main(main) where
 
+import Debug.Trace
+import FastString
 import Module
 import Arguments
 import Data.Maybe
@@ -47,15 +49,17 @@ import System.Directory.Extra as IO
 import System.Environment
 import System.IO
 import System.Exit
+import HIE.Bios.Environment
 import Paths_ghcide
 import Development.GitRev
 import Development.Shake (Action, action)
 import qualified Data.HashSet as HashSet
 import qualified Data.Map.Strict as Map
+import Data.Either
 
 import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
-import DynFlags (parseDynamicFlagsFull, flagsPackage, flagsDynamic)
+import DynFlags (parseDynamicFlagsFull, flagsPackage, flagsDynamic, unsafeGlobalDynFlags, PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
 import qualified GHC.Paths
 
@@ -132,10 +136,11 @@ main = do
         putStrLn "\nStep 3/6: Initializing the IDE"
         vfs <- makeVFSHandle
         grab <- loadSession dir
-        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) (defaultIdeOptions $ return grab) vfs
+        debouncer <- newAsyncDebouncer
+        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ return grab) vfs
 
         putStrLn "\nStep 4/6: Type checking the files"
-        setFilesOfInterest ide $ Set.fromList $ map toNormalizedFilePath files
+        setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
         results <- runActionSync ide $ uses TypeCheck $ map toNormalizedFilePath files
         let (worked, failed) = partition fst $ zip (map isJust results) files
         when (failed /= []) $
@@ -173,8 +178,8 @@ showEvent lock (EventFileDiagnostics (toNormalizedFilePath -> file) diags) =
 showEvent lock e = withLock lock $ print e
 
 
-cradleToSession :: Cradle a -> FilePath -> IO HscEnvEq
-cradleToSession cradle file = do
+cradleToSessionOpts :: Cradle a -> FilePath -> IO ComponentOptions
+cradleToSessionOpts cradle file = do
     let showLine s = putStrLn ("> " ++ s)
     cradleRes <- runCradle (cradleOptsProg cradle) showLine file
     opts <- case cradleRes of
@@ -192,23 +197,28 @@ emptyHscEnv = do
     initDynLinker env
     pure env
 
-addPackageOpts :: HscEnv -> ComponentOptions -> IO HscEnv
-addPackageOpts hscEnv opts = do
+addPackageOpts :: HscEnv -> DynFlags -> IO HscEnv
+addPackageOpts hscEnv df = do
     runGhcEnv hscEnv $ do
-        df <- getSessionDynFlags
-        (df', _, _) <- parseDynamicFlagsFull flagsPackage True df (map noLoc $ componentOptions opts)
-        _targets <- setSessionDynFlags df'
+        cur_df <- getSessionDynFlags
+        liftIO $ print (length (packageFlags df))
+        -- only update the package flags
+        _targets <- setSessionDynFlags (cur_df { packageFlags = packageFlags df
+                                               , packageDBFlags = packageDBFlags cur_df ++ packageDBFlags df } )
         getSession
 
-tweakHscEnv :: HscEnv -> ComponentOptions -> IO HscEnv
-tweakHscEnv hscEnv opts = do
+tweakHscEnv :: HscEnv -> DynFlags -> IO HscEnv
+tweakHscEnv hscEnv df' = do
     runGhcEnv hscEnv $ do
-        df <- getSessionDynFlags
-        (df', _, _) <- parseDynamicFlagsFull flagsDynamic True df (map noLoc $ componentOptions opts)
         modifySession $ \h -> h { hsc_dflags = df', hsc_IC = (hsc_IC h) { ic_dflags = df' } }
-        getSession
+        s <- getSession
+        return s
 
-deriving instance Ord ComponentOptions
+-- Set all of DynFlags options apart from stuff set by initPackages
+setNonPackageOptions :: HscEnv -> DynFlags -> DynFlags
+setNonPackageOptions hscEnv df =
+    let pkg_df = hsc_dflags hscEnv
+    in df { pkgDatabase = pkgDatabase pkg_df, pkgState = pkgState pkg_df }
 
 targetToFile :: TargetId -> (NormalizedFilePath, Bool)
 targetToFile (TargetModule mod) = (toNormalizedFilePath $ (moduleNameSlashes mod) -<.> "hs", False)
@@ -227,32 +237,50 @@ loadSession dir = do
         res' <- traverse makeAbsolute res
         return $ normalise <$> res'
 
-    packageSetup <- memoIO $ \(hieYaml, opts) -> do
+    packageSetup <- return $ \(hieYaml, opts) -> do
         hscEnv <- emptyHscEnv
         -- TODO This should definitely not call initSession
-        targets <- runGhcEnv hscEnv $ initSession opts
+        (df, targets) <- runGhcEnv hscEnv $ addCmdOpts (componentOptions opts) unsafeGlobalDynFlags
+        -- print (hieYaml, opts)
+        modifyVar hscEnvs $ \m -> do
+            oldDeps <- case Map.lookup hieYaml m of
+                Nothing -> pure []
+                Just (hscEnv, deps) -> pure deps
+            let new_deps = (thisInstalledUnitId df, df) : oldDeps
+                inplace = map fst new_deps
+                do_one (uid,df) = (uid, removeInplacePackages inplace df)
+                -- All deps, but without any packages which are also loaded
+                -- into memory
+                new_deps' = map do_one new_deps
+            -- Make a new HscEnv with all the right packages loaded, none
+            -- of the
+            hscEnv <- emptyHscEnv
+            newHscEnv <- foldM addPackageOpts hscEnv (map (fst . snd) new_deps')
+            -- Now overwrite the other dflags options but with an
+            -- initialised package state to get a proper HscEnv for each
+            -- component
+            let do_one' hsc (uid, (df, uids)) = (uid, (setNonPackageOptions hsc df, uids))
+                new_deps'' = map (do_one' newHscEnv) new_deps'
+
+            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (head new_deps'', targets))
+
+
+    session <- return $ \(hieYaml, opts) -> do
+        ((iuid, (df, deps)), targets) <- packageSetup (hieYaml, opts)
+        Just (hscEnv, deps) <- fmap (Map.lookup hieYaml) $ readVar hscEnvs
+        -- TODO Handle the case where there is no hie.yaml
+        let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
+        res <- newHscEnvEq hscEnv' deps
         modifyVar_ fileToFlags $ \var -> do
-            let xs = map (\target -> (targetToFile $ targetId target,opts)) targets
+            let xs = map (\target -> (targetToFile $ targetId target,res)) targets
             print (map (fromNormalizedFilePath . fst . fst) xs)
             pure $ xs ++ var
-        -- print (hieYaml, opts)
-        modifyVar_ hscEnvs $ \m -> do
-            oldHscEnv <- case Map.lookup hieYaml m of
-                Nothing -> emptyHscEnv
-                Just hscEnv -> pure hscEnv
-            newHscEnv <- addPackageOpts oldHscEnv opts
-            pure (Map.insert hieYaml newHscEnv m)
-
-    session <- memoIO $ \(hieYaml, opts) -> do
-        packageSetup (hieYaml, opts)
-        hscEnv <- fmap (Map.lookup hieYaml) $ readVar hscEnvs
-        -- TODO Handle the case where there is no hie.yaml
-        newHscEnvEq =<< tweakHscEnv (fromJust hscEnv) opts
+        return res
 
     lock <- newLock
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
-    sessionOpts <- memoIO $ \(hieYaml, file) -> withLock lock $ do
+    sessionOpts <- return $ \(hieYaml, file) -> withLock lock $ do
         v <- readVar fileToFlags
         -- We sort so exact matches come first.
         case find (\((f', exact), _) -> fromNormalizedFilePath f' == file || not exact && fromNormalizedFilePath f' `isSuffixOf` file) v of
@@ -263,11 +291,18 @@ loadSession dir = do
                 putStrLn $ "Shelling out to cabal " <> show file
                 cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
                 opts <- cradleToSessionOpts cradle file
-                pure opts
+                print opts
+                session (hieYaml, opts)
     return $ \file -> liftIO $ do
         hieYaml <- cradleLoc file
-        opts <- sessionOpts (hieYaml, file)
-        session (hieYaml, opts)
+        sessionOpts (hieYaml, file)
+
+removeInplacePackages :: [InstalledUnitId] -> DynFlags -> (DynFlags, [InstalledUnitId])
+removeInplacePackages us df = (df { packageFlags = ps }, uids)
+  where
+    (uids, ps) = partitionEithers (map go (packageFlags df))
+    go p@(ExposePackage s (UnitIdArg u) _) = if (toInstalledUnitId u `elem` us) then Left (toInstalledUnitId u) else Right p
+    go p = Right p
 
 -- | Memoize an IO function, with the characteristics:
 --

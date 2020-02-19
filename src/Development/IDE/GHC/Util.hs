@@ -4,7 +4,7 @@
 -- | General utility functions, mostly focused around GHC operations.
 module Development.IDE.GHC.Util(
     -- * HcsEnv and environment
-    HscEnvEq, hscEnv, newHscEnvEq,
+    HscEnvEq, hscEnv, newHscEnvEq, deps,
     modifyDynFlags,
     runGhcEnv,
     -- * GHC wrappers
@@ -130,24 +130,29 @@ moduleImportPath (takeDirectory . fromNormalizedFilePath -> pathDir) pm
 
 -- | An 'HscEnv' with equality. Two values are considered equal
 --   if they are created with the same call to 'newHscEnvEq'.
-data HscEnvEq = HscEnvEq Unique HscEnv
+data HscEnvEq = HscEnvEq Unique
+                         HscEnv
+                         [(InstalledtUnitId, DynFlags)] -- In memory components for this HscEnv
 
 -- | Unwrap an 'HsEnvEq'.
 hscEnv :: HscEnvEq -> HscEnv
-hscEnv (HscEnvEq _ x) = x
+hscEnv (HscEnvEq _ x _) = x
+
+deps :: HscEnvEq -> [(InstalledUnitId, DynFlags)]
+deps (HscEnvEq _ _ u) = u
 
 -- | Wrap an 'HscEnv' into an 'HscEnvEq'.
-newHscEnvEq :: HscEnv -> IO HscEnvEq
-newHscEnvEq e = do u <- newUnique; return $ HscEnvEq u e
+newHscEnvEq :: HscEnv -> [(InstalledUnitId, DynFlags)] -> IO HscEnvEq
+newHscEnvEq e uids = do u <- newUnique; return $ HscEnvEq u e uids
 
 instance Show HscEnvEq where
-  show (HscEnvEq a _) = "HscEnvEq " ++ show (hashUnique a)
+  show (HscEnvEq a _ _) = "HscEnvEq " ++ show (hashUnique a)
 
 instance Eq HscEnvEq where
-  HscEnvEq a _ == HscEnvEq b _ = a == b
+  HscEnvEq a _ _ == HscEnvEq b _ _ = a == b
 
 instance NFData HscEnvEq where
-  rnf (HscEnvEq a b) = rnf (hashUnique a) `seq` b `seq` ()
+  rnf (HscEnvEq a b c) = rnf (hashUnique a) `seq` b `seq` c `seq` ()
 
 -- | Read a UTF8 file, with lenient decoding, so it will never raise a decoding error.
 readFileUtf8 :: FilePath -> IO T.Text
