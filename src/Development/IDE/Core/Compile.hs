@@ -29,6 +29,7 @@ import Development.IDE.GHC.Util
 import qualified GHC.LanguageExtensions.Type as GHC
 import Development.IDE.Types.Options
 import Development.IDE.Types.Location
+import Outputable (pprTraceM, ppr)
 
 #if MIN_GHC_API_VERSION(8,6,0)
 import           DynamicLoading (initializePlugins)
@@ -253,6 +254,7 @@ setupEnv tmsIn = do
     session <- getSession
 
     let mss = map (pm_mod_summary . tm_parsed_module . tmrModule) tms
+    pprTraceM "mod_sums" (ppr (map ms_mod mss))
 
     -- set the target and module graph in the session
     let graph = mkModuleGraph mss

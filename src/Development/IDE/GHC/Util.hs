@@ -132,7 +132,7 @@ moduleImportPath (takeDirectory . fromNormalizedFilePath -> pathDir) pm
 --   if they are created with the same call to 'newHscEnvEq'.
 data HscEnvEq = HscEnvEq Unique
                          HscEnv
-                         [(InstalledtUnitId, DynFlags)] -- In memory components for this HscEnv
+                         [(InstalledUnitId, DynFlags)] -- In memory components for this HscEnv
 
 -- | Unwrap an 'HsEnvEq'.
 hscEnv :: HscEnvEq -> HscEnv

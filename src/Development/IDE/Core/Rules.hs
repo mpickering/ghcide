@@ -157,10 +157,11 @@ getLocatedImportsRule =
         env_eq <- use_ GhcSession file
         let env = hscEnv env_eq
         liftIO $ print (map fst (deps env_eq))
+        let import_dirs = map (importPaths . snd ) (deps env_eq)
         let dflags = addRelativeImport file pm $ hsc_dflags env
         opt <- getIdeOptions
         (diags, imports') <- fmap unzip $ forM imports $ \(isSource, (mbPkgName, modName)) -> do
-            diagOrImp <- locateModule dflags (optExtensions opt) getFileExists modName mbPkgName isSource
+            diagOrImp <- locateModule dflags import_dirs (optExtensions opt) getFileExists modName mbPkgName isSource
             case diagOrImp of
                 Left diags -> pure (diags, Left (modName, Nothing))
                 Right (FileImport path) -> pure ([], Left (modName, Just path))

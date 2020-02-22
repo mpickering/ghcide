@@ -177,7 +177,7 @@ executable ghcide
         ghc-paths,
         ghc,
         gitrev,
-        haskell-lsp,
+        haskell-lsp == 0.20.0.* ,
         hie-bios >= 0.4.0 && < 0.5,
         ghcide,
         optparse-applicative,

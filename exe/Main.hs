@@ -8,6 +8,8 @@
 
 module Main(main) where
 
+
+import Packages
 import Debug.Trace
 import FastString
 import Module
@@ -56,10 +58,11 @@ import Development.Shake (Action, action)
 import qualified Data.HashSet as HashSet
 import qualified Data.Map.Strict as Map
 import Data.Either
+import Outputable (pprTraceM, ppr, pprTrace, text)
 
 import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
-import DynFlags (parseDynamicFlagsFull, flagsPackage, flagsDynamic, unsafeGlobalDynFlags, PackageFlag(..), PackageArg(..))
+import DynFlags (parseDynamicFlagsFull, flagsPackage, flagsDynamic, unsafeGlobalDynFlags, PackageFlag(..), PackageArg(..), setGeneralFlag', PackageDBFlag(..))
 import GHC hiding (def)
 import qualified GHC.Paths
 
@@ -197,15 +200,14 @@ emptyHscEnv = do
     initDynLinker env
     pure env
 
-addPackageOpts :: HscEnv -> DynFlags -> IO HscEnv
-addPackageOpts hscEnv df = do
-    runGhcEnv hscEnv $ do
-        cur_df <- getSessionDynFlags
-        liftIO $ print (length (packageFlags df))
+addPackageOpts :: DynFlags -> DynFlags -> DynFlags
+addPackageOpts cur_df df = do
         -- only update the package flags
-        _targets <- setSessionDynFlags (cur_df { packageFlags = packageFlags df
-                                               , packageDBFlags = packageDBFlags cur_df ++ packageDBFlags df } )
-        getSession
+        pprTrace "addPackageOpts" (ppr $  packageFlags df) $
+          (cur_df { packageFlags = packageFlags df ++ packageFlags cur_df
+                  , packageDBFlags = reverse ( reverse(packageDBFlags cur_df) ++ reverse (packageDBFlags df))
+                  , ghcMode = OneShot } )
+
 
 tweakHscEnv :: HscEnv -> DynFlags -> IO HscEnv
 tweakHscEnv hscEnv df' = do
@@ -218,16 +220,19 @@ tweakHscEnv hscEnv df' = do
 setNonPackageOptions :: HscEnv -> DynFlags -> DynFlags
 setNonPackageOptions hscEnv df =
     let pkg_df = hsc_dflags hscEnv
-    in df { pkgDatabase = pkgDatabase pkg_df, pkgState = pkgState pkg_df }
+    in
+      df { pkgDatabase = pkgDatabase pkg_df, pkgState = pkgState pkg_df, thisUnitIdInsts_ = thisUnitIdInsts_ pkg_df }
 
 targetToFile :: TargetId -> (NormalizedFilePath, Bool)
 targetToFile (TargetModule mod) = (toNormalizedFilePath $ (moduleNameSlashes mod) -<.> "hs", False)
 targetToFile (TargetFile f _) = (toNormalizedFilePath f, True)
 
+setNameCache nc hsc = hsc { hsc_NC = nc }
+
 loadSession :: FilePath -> IO (FilePath -> Action HscEnvEq)
 loadSession dir = do
     hscEnvs <- newVar Map.empty
-    fileToFlags <- newVar []
+    fileToFlags <- newVar Map.empty
     -- This caches the mapping from Mod.hs -> hie.yaml
     cradleLoc <- memoIO $ \v -> do
         res <- findCradle v
@@ -240,48 +245,67 @@ loadSession dir = do
     packageSetup <- return $ \(hieYaml, opts) -> do
         hscEnv <- emptyHscEnv
         -- TODO This should definitely not call initSession
-        (df, targets) <- runGhcEnv hscEnv $ addCmdOpts (componentOptions opts) unsafeGlobalDynFlags
+        (df, targets) <- runGhcEnv hscEnv $ addCmdOpts (componentOptions opts) (hsc_dflags hscEnv)
         -- print (hieYaml, opts)
         modifyVar hscEnvs $ \m -> do
-            oldDeps <- case Map.lookup hieYaml m of
-                Nothing -> pure []
-                Just (hscEnv, deps) -> pure deps
-            let new_deps = (thisInstalledUnitId df, df) : oldDeps
-                inplace = map fst new_deps
-                do_one (uid,df) = (uid, removeInplacePackages inplace df)
+            let oldDeps = Map.lookup hieYaml m
+            let new_deps = (thisInstalledUnitId df, df, targets) : maybe [] snd oldDeps
+                inplace = map (\(a, _, _) -> a) new_deps
+                do_one (uid,df, ts) = (uid, removeInplacePackages inplace df, ts)
                 -- All deps, but without any packages which are also loaded
                 -- into memory
                 new_deps' = map do_one new_deps
             -- Make a new HscEnv with all the right packages loaded, none
             -- of the
-            hscEnv <- emptyHscEnv
-            newHscEnv <- foldM addPackageOpts hscEnv (map (fst . snd) new_deps')
+            start_df <- hsc_dflags <$> emptyHscEnv
+            let all_df = foldl1' addPackageOpts (map (fst . (\(_, d, _) -> d)) new_deps')
+            hscEnv <- case oldDeps of
+                        Nothing -> emptyHscEnv
+                        Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv
+            newHscEnv <-
+              runGhcEnv hscEnv $ do
+                pprTraceM "package" (ppr $ nub (packageFlags all_df))
+                pprTraceM "package_db" (text $ show $ nub (packageDBFlags all_df))
+                pprTraceM "package_db" (text $ show $ (packageDBFlags all_df))
+                setSessionDynFlags (all_df { packageFlags = nub (packageFlags all_df)
+                                           , packageDBFlags = reverse (nub (reverse $ packageDBFlags all_df)) })
+                getSession
             -- Now overwrite the other dflags options but with an
             -- initialised package state to get a proper HscEnv for each
             -- component
-            let do_one' hsc (uid, (df, uids)) = (uid, (setNonPackageOptions hsc df, uids))
+            let do_one' hsc (uid, (df, uids), ts) = (uid, (setNonPackageOptions hsc df, uids, ts))
                 new_deps'' = map (do_one' newHscEnv) new_deps'
 
-            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (head new_deps'', targets))
+            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (head new_deps'', tail new_deps''))
 
 
     session <- return $ \(hieYaml, opts) -> do
-        ((iuid, (df, deps)), targets) <- packageSetup (hieYaml, opts)
-        Just (hscEnv, deps) <- fmap (Map.lookup hieYaml) $ readVar hscEnvs
+        (new, old_deps) <- packageSetup (hieYaml, opts)
+        Just (hscEnv, _) <- fmap (Map.lookup hieYaml) $ readVar hscEnvs
         -- TODO Handle the case where there is no hie.yaml
-        let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
-        res <- newHscEnvEq hscEnv' deps
+        let uids = map (\(iuid, (df, uis, targets)) -> (iuid, df)) (new : old_deps)
+        let new_cache (iuid, (df, uis, targets)) =  do
+              let mnp = listVisibleModuleNames  df
+              pprTraceM "mnp" (ppr mnp)
+              let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
+              res <- newHscEnvEq hscEnv' uids
+              let xs = map (\target -> (targetToFile $ targetId target,res)) targets
+              print (map (fromNormalizedFilePath . fst . fst) xs)
+              return (xs, res)
+
+        (cs, res) <- new_cache new
+        cached_targets <- concatMapM (fmap fst . new_cache) old_deps
         modifyVar_ fileToFlags $ \var -> do
-            let xs = map (\target -> (targetToFile $ targetId target,res)) targets
-            print (map (fromNormalizedFilePath . fst . fst) xs)
-            pure $ xs ++ var
+            pure $ Map.insert hieYaml (cs ++ cached_targets) var
         return res
 
     lock <- newLock
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     sessionOpts <- return $ \(hieYaml, file) -> withLock lock $ do
-        v <- readVar fileToFlags
+        fm <- readVar fileToFlags
+        let mv = Map.lookup hieYaml fm
+        let v = fromMaybe [] mv
         -- We sort so exact matches come first.
         case find (\((f', exact), _) -> fromNormalizedFilePath f' == file || not exact && fromNormalizedFilePath f' `isSuffixOf` file) v of
             Just (_, opts) -> do
@@ -320,3 +344,9 @@ memoIO op = do
                 res <- onceFork $ op k
                 return (Map.insert k res mp, res)
             Just res -> return (mp, res)
+
+instance Show PackageDBFlag where
+  show (PackageDB _) = "pkdb"
+  show (NoUserPackageDB) = "no-user"
+  show (NoGlobalPackageDB) = "no-global"
+  show (ClearPackageDBs)  = "clear"
