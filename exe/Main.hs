@@ -205,7 +205,11 @@ addPackageOpts cur_df df = do
         -- only update the package flags
         pprTrace "addPackageOpts" (ppr $  packageFlags df) $
           (cur_df { packageFlags = packageFlags df ++ packageFlags cur_df
+                  -- Not sure these reversals are necessary
                   , packageDBFlags = reverse ( reverse(packageDBFlags cur_df) ++ reverse (packageDBFlags df))
+                  -- Enabling OneShot mode disables the check in the
+                  -- interface file loader that a home package has the same
+                  -- unit id as the unit currently being compiled.
                   , ghcMode = OneShot } )
 
 
@@ -222,6 +226,8 @@ setNonPackageOptions hscEnv df =
     let pkg_df = hsc_dflags hscEnv
     in
       df { pkgDatabase = pkgDatabase pkg_df, pkgState = pkgState pkg_df, thisUnitIdInsts_ = thisUnitIdInsts_ pkg_df }
+      -- At this point here we should alter the module visibility of the
+      -- packages so it's only the right ones made available.
 
 targetToFile :: TargetId -> (NormalizedFilePath, Bool)
 targetToFile (TargetModule mod) = (toNormalizedFilePath $ (moduleNameSlashes mod) -<.> "hs", False)
@@ -243,38 +249,51 @@ loadSession dir = do
         return $ normalise <$> res'
 
     packageSetup <- return $ \(hieYaml, opts) -> do
+        -- Parse DynFlags for the newly discovered component
         hscEnv <- emptyHscEnv
-        -- TODO This should definitely not call initSession
-        (df, targets) <- runGhcEnv hscEnv $ addCmdOpts (componentOptions opts) (hsc_dflags hscEnv)
-        -- print (hieYaml, opts)
+        (df, targets) <- runGhcEnv hscEnv $ do
+                          (df, target) <- addCmdOpts (componentOptions opts) (hsc_dflags hscEnv)
+                          (df', pl) <- liftIO $ initPackages df
+                          return (df' , target)
+        -- Now lookup to see whether we are adding to an exisiting HscEnv
+        -- or making a new one. The lookup returns the HscEnv and a list of
+        -- information about other components loaded into the HscEnv
+        -- (unitId, DynFlag, Targets)
         modifyVar hscEnvs $ \m -> do
             let oldDeps = Map.lookup hieYaml m
             let new_deps = (thisInstalledUnitId df, df, targets) : maybe [] snd oldDeps
                 inplace = map (\(a, _, _) -> a) new_deps
+                -- Remove all inplace dependencies from package flags for
+                -- components in this HscEnv
                 do_one (uid,df, ts) = (uid, removeInplacePackages inplace df, ts)
                 -- All deps, but without any packages which are also loaded
                 -- into memory
                 new_deps' = map do_one new_deps
             -- Make a new HscEnv with all the right packages loaded, none
             -- of the
-            start_df <- hsc_dflags <$> emptyHscEnv
-            let all_df = foldl1' addPackageOpts (map (fst . (\(_, d, _) -> d)) new_deps')
+            start_df <- hsc_EPS <$> emptyHscEnv
+            -- Ideally we would start from the empty dflags here but I am
+            -- missing some options which lead to confusing errors.
+            -- Probably the hide-all-package flag as the cabal store
+            -- contains a lot of gunk
+            --let all_df = foldl1' addPackageOpts (map (fst . (\(_, d, _) -> d)) new_deps')
             hscEnv <- case oldDeps of
                         Nothing -> emptyHscEnv
                         Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv
             newHscEnv <-
               runGhcEnv hscEnv $ do
-                pprTraceM "package" (ppr $ nub (packageFlags all_df))
-                pprTraceM "package_db" (text $ show $ nub (packageDBFlags all_df))
-                pprTraceM "package_db" (text $ show $ (packageDBFlags all_df))
-                setSessionDynFlags (all_df { packageFlags = nub (packageFlags all_df)
-                                           , packageDBFlags = reverse (nub (reverse $ packageDBFlags all_df)) })
+                pprTraceM "package" (ppr $ nub (packageFlags df))
+                --pprTraceM "package_db" (text $ show $ nub (packageDBFlags all_df))
+                --pprTraceM "package_db" (text $ show $ (packageDBFlags all_df))
+                setSessionDynFlags df -- (all_df { --packageFlags = nub (packageFlags all_df)
+                                              --, packageDBFlags = reverse (nub (reverse $ packageDBFlags all_df))
+                                        --      , pkgDatabase = Nothing })
                 getSession
             -- Now overwrite the other dflags options but with an
             -- initialised package state to get a proper HscEnv for each
             -- component
-            let do_one' hsc (uid, (df, uids), ts) = (uid, (setNonPackageOptions hsc df, uids, ts))
-                new_deps'' = map (do_one' newHscEnv) new_deps'
+            let do_one' hsc (uid, (df, uids), ts) = (uid, (df, uids, ts))
+                new_deps'' = map (do_one' ()) new_deps'
 
             pure (Map.insert hieYaml (newHscEnv, new_deps) m, (head new_deps'', tail new_deps''))
 

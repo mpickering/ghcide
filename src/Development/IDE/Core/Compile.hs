@@ -110,8 +110,15 @@ typecheckModule (IdeDefer defer) packageState deps pm =
     runGhcEnv packageState $
         catchSrcErrors "typecheck" $ do
             setupEnv deps
+            hpt <- hsc_HPT <$> getSession
             let modSummary = pm_mod_summary pm
                 dflags = ms_hspp_opts modSummary
+            sess <- getSession
+            res <- liftIO $ findHomeModule sess (mkModuleName "Development.IDE.Core.Debouncer")
+            let herald = case res of
+                          NotFound {} -> "NOT FOUND"
+                          _ -> "FOUND"
+            pprTraceM "HPT" (ppr (ms_mod modSummary) $$ pprHPT hpt $$ ppr (isJust $ lookupHpt hpt (mkModuleName "Development.IDE.Core.Debouncer")) $$ text herald)
             modSummary' <- initPlugins modSummary
             (warnings, tcm) <- withWarnings "typecheck" $ \tweak ->
                 GHC.typecheckModule $ enableTopLevelWarnings
@@ -262,8 +269,10 @@ setupEnv tmsIn = do
 
     -- Make modules available for others that import them,
     -- by putting them in the finder cache.
-    let ims  = map (InstalledModule (thisInstalledUnitId $ hsc_dflags session) . moduleName . ms_mod) mss
+    let uid = (thisInstalledUnitId $ hsc_dflags session)
+        ims  = map (InstalledModule (thisInstalledUnitId $ hsc_dflags session) . moduleName . ms_mod) mss
         ifrs = zipWith (\ms -> InstalledFound (ms_location ms)) mss ims
+    pprTraceM "ifrs" (ppr ims)
     -- We have to create a new IORef here instead of modifying the existing IORef as
     -- it is shared between concurrent compilations.
     prevFinderCache <- liftIO $ readIORef $ hsc_FC session
@@ -274,8 +283,9 @@ setupEnv tmsIn = do
     newFinderCacheVar <- liftIO $ newIORef $! newFinderCache
     modifySession $ \s -> s { hsc_FC = newFinderCacheVar }
 
+    let uid' = fsToUnitId (installedUnitIdFS uid)
     -- load dependent modules, which must be in topological order.
-    mapM_ loadModuleHome tms
+    mapM_ (loadModuleHome (map (moduleName . ms_mod) mss) uid') tms
 
 
 -- | Load a module, quickly. Input doesn't need to be desugared.
@@ -284,13 +294,25 @@ setupEnv tmsIn = do
 -- modifies the session.
 loadModuleHome
     :: (GhcMonad m)
-    => TcModuleResult
+    => [ModuleName]
+    -> UnitId
+    -> TcModuleResult
     -> m ()
-loadModuleHome tmr = modifySession $ \e ->
-    e { hsc_HPT = addToHpt (hsc_HPT e) mod mod_info }
+loadModuleHome deps uid tmr = modifySession $ \e ->
+    e { hsc_HPT = addToHpt (hsc_HPT e) mod mod_info' }
   where
     ms       = pm_mod_summary . tm_parsed_module . tmrModule $ tmr
     mod_info = tmrModInfo tmr
+    mod_info' = mod_info { hm_iface = setModuleUnit (hm_iface mod_info ) }
+    setUid m
+      | moduleName m `elem` deps = m { moduleUnitId = uid }
+      | otherwise = m
+    setModuleUnit iface = iface { mi_module = setUid (mi_module iface)
+                                , mi_deps = fix_dep_fis (mi_deps iface) }
+
+
+    fix_dep_fis ds =  ds { dep_finsts = map setUid (dep_finsts ds)
+                         , dep_orphs = map setUid (dep_orphs ds) }
     mod      = ms_mod_name ms
 
 
