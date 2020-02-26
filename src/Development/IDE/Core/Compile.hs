@@ -239,14 +239,13 @@ mkTcModuleResult
     -> m TcModuleResult
 mkTcModuleResult tcm = do
     session <- getSession
-    let uid = (thisInstalledUnitId $ hsc_dflags session)
 #if MIN_GHC_API_VERSION(8,10,0)
     iface <- liftIO $ mkIfaceTc session Sf_None details tcGblEnv
 #else
     (iface, _) <- liftIO $ mkIfaceTc session Nothing Sf_None details tcGblEnv
 #endif
     let mod_info = HomeModInfo iface details Nothing
-    return $ TcModuleResult tcm mod_info uid
+    return $ TcModuleResult tcm mod_info
   where
     (tcGblEnv, details) = tm_internals_ tcm
 
@@ -261,18 +260,18 @@ setupEnv tmsIn = do
 
     session <- getSession
 
-    let mss = map (\t -> (tmrUnitId t, pm_mod_summary . tm_parsed_module . tmrModule $ t)) tms
-    pprTraceM "mod_sums" (ppr (map (ms_mod . snd) mss))
+    let mss = map (pm_mod_summary . tm_parsed_module . tmrModule) tms
+    pprTraceM "mod_sums" (ppr (map ms_mod mss))
 
     -- set the target and module graph in the session
-    let graph = mkModuleGraph (map snd mss)
+    let graph = mkModuleGraph mss
     setSession session { hsc_mod_graph = graph }
 
     -- Make modules available for others that import them,
     -- by putting them in the finder cache.
     let uid = (thisInstalledUnitId $ hsc_dflags session)
-        ims  = map (\(uid, m) -> InstalledModule uid (moduleName (ms_mod m))) mss
-        ifrs = zipWith (\(_, ms) -> InstalledFound (ms_location ms)) mss ims
+        ims  = map (InstalledModule (thisInstalledUnitId $ hsc_dflags session) . moduleName . ms_mod) mss
+        ifrs = zipWith (\ms -> InstalledFound (ms_location ms)) mss ims
     pprTraceM "ifrs" (ppr ims)
     -- We have to create a new IORef here instead of modifying the existing IORef as
     -- it is shared between concurrent compilations.
@@ -286,7 +285,7 @@ setupEnv tmsIn = do
 
     let uid' = fsToUnitId (installedUnitIdFS uid)
     -- load dependent modules, which must be in topological order.
-    mapM_ loadModuleHome tms
+    mapM_ (loadModuleHome (map (moduleName . ms_mod) mss) uid') tms
 
 
 -- | Load a module, quickly. Input doesn't need to be desugared.
@@ -295,13 +294,25 @@ setupEnv tmsIn = do
 -- modifies the session.
 loadModuleHome
     :: (GhcMonad m)
-    => TcModuleResult
+    => [ModuleName]
+    -> UnitId
+    -> TcModuleResult
     -> m ()
-loadModuleHome tmr = modifySession $ \e ->
-    e { hsc_HPT = addToHpt (hsc_HPT e) mod mod_info }
+loadModuleHome deps uid tmr = modifySession $ \e ->
+    e { hsc_HPT = addToHpt (hsc_HPT e) mod mod_info' }
   where
     ms       = pm_mod_summary . tm_parsed_module . tmrModule $ tmr
     mod_info = tmrModInfo tmr
+    mod_info' = mod_info { hm_iface = setModuleUnit (hm_iface mod_info ) }
+    setUid m
+      | moduleName m `elem` deps = m { moduleUnitId = uid }
+      | otherwise = m
+    setModuleUnit iface = iface { mi_module = setUid (mi_module iface)
+                                , mi_deps = fix_dep_fis (mi_deps iface) }
+
+
+    fix_dep_fis ds =  ds { dep_finsts = map setUid (dep_finsts ds)
+                         , dep_orphs = map setUid (dep_orphs ds) }
     mod      = ms_mod_name ms
 
 
