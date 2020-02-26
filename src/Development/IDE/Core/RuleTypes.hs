@@ -22,7 +22,7 @@ import           Development.Shake
 import           GHC.Generics                             (Generic)
 
 import           GHC
-import Module (InstalledUnitId)
+import Module (InstalledUnitId, InstalledModule)
 import HscTypes (CgGuts, Linkable, HomeModInfo, ModDetails)
 import Development.IDE.GHC.Compat
 
@@ -51,6 +51,7 @@ type instance RuleResult GetDependencies = TransitiveDependencies
 data TcModuleResult = TcModuleResult
     { tmrModule     :: TypecheckedModule
     , tmrModInfo    :: HomeModInfo
+    , tmrUnitId     :: InstalledUnitId
     }
 instance Show TcModuleResult where
     show = show . pm_mod_summary . tm_parsed_module . tmrModule
