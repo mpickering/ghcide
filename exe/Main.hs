@@ -140,19 +140,13 @@ main = do
         vfs <- makeVFSHandle
         grab <- loadSession dir
         debouncer <- newAsyncDebouncer
-        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ return grab) vfs
+        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger minBound) debouncer (defaultIdeOptions $ return grab) vfs
 
         putStrLn "\nStep 4/6: Type checking the files"
-        setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
-        results <- runActionSync ide $ uses TypeCheck $ map toNormalizedFilePath files
-        let (worked, failed) = partition fst $ zip (map isJust results) files
-        when (failed /= []) $
-            putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
-
-        let files xs = let n = length xs in if n == 1 then "1 file" else show n ++ " files"
-        putStrLn $ "\nCompleted (" ++ files worked ++ " worked, " ++ files failed ++ " failed)"
-
-        unless (null failed) exitFailure
+        --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
+        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "src/Development/IDE/Core/Rules.hs"
+        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "exe/Main.hs"
+        return ()
 
 
 expandFiles :: [FilePath] -> IO [FilePath]
@@ -261,7 +255,8 @@ loadSession dir = do
         -- (unitId, DynFlag, Targets)
         modifyVar hscEnvs $ \m -> do
             let oldDeps = Map.lookup hieYaml m
-            let new_deps = (thisInstalledUnitId df, df, targets) : maybe [] snd oldDeps
+            let
+                new_deps = (thisInstalledUnitId df, df, targets) : maybe [] snd oldDeps
                 inplace = map (\(a, _, _) -> a) new_deps
                 -- Remove all inplace dependencies from package flags for
                 -- components in this HscEnv
@@ -305,9 +300,10 @@ loadSession dir = do
         let uids = map (\(iuid, (df, uis, targets)) -> (iuid, df)) (new : old_deps)
         let new_cache (iuid, (df, uis, targets)) =  do
               let mnp = listVisibleModuleNames  df
-              pprTraceM "mnp" (ppr mnp)
+--              pprTraceM "mnp" (ppr mnp)
               let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
               res <- newHscEnvEq hscEnv' uids
+              pprTraceM "TARGETS" (ppr (map (show . targetToFile . targetId) targets))
               let xs = map (\target -> (targetToFile $ targetId target,res)) targets
               print (map (fromNormalizedFilePath . fst . fst) xs)
               return (xs, res)
@@ -321,7 +317,7 @@ loadSession dir = do
     lock <- newLock
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
-    sessionOpts <- return $ \(hieYaml, file) -> withLock lock $ do
+    sessionOpts <- return $ \(hieYaml, file) -> do
         fm <- readVar fileToFlags
         let mv = Map.lookup hieYaml fm
         let v = fromMaybe [] mv
@@ -336,14 +332,16 @@ loadSession dir = do
                 opts <- cradleToSessionOpts cradle file
                 print opts
                 session (hieYaml, opts)
-    return $ \file -> liftIO $ do
+    return $ \file -> liftIO $ withLock lock $ do
         hieYaml <- cradleLoc file
         sessionOpts (hieYaml, file)
 
 removeInplacePackages :: [InstalledUnitId] -> DynFlags -> (DynFlags, [InstalledUnitId])
-removeInplacePackages us df = (df { packageFlags = ps }, uids)
+removeInplacePackages us df = (df { packageFlags = ps
+                                  , thisInstalledUnitId = fake_uid }, uids)
   where
     (uids, ps) = partitionEithers (map go (packageFlags df))
+    fake_uid = toInstalledUnitId (stringToUnitId "fake_uid")
     go p@(ExposePackage s (UnitIdArg u) _) = if (toInstalledUnitId u `elem` us) then Left (toInstalledUnitId u) else Right p
     go p = Right p
 

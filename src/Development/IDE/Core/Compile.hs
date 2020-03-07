@@ -3,6 +3,7 @@
 
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE StandaloneDeriving #-}
 #include "ghc-api-version.h"
 
 -- | Based on https://ghc.haskell.org/trac/ghc/wiki/Commentary/Compiler/API.
@@ -95,6 +96,7 @@ computePackageDeps env pkg = do
             T.pack $ "unknown package: " ++ show pkg]
         Just pkgInfo -> return $ Right $ depends pkgInfo
 
+deriving instance Show EpsStats
 
 -- | Typecheck a single module using the supplied dependencies and packages.
 typecheckModule
@@ -113,17 +115,27 @@ typecheckModule (IdeDefer defer) packageState deps pm =
             hpt <- hsc_HPT <$> getSession
             let modSummary = pm_mod_summary pm
                 dflags = ms_hspp_opts modSummary
-            sess <- getSession
+            {-sess <- getSession
             res <- liftIO $ findHomeModule sess (mkModuleName "Development.IDE.Core.Debouncer")
             let herald = case res of
                           NotFound {} -> "NOT FOUND"
-                          _ -> "FOUND"
-            pprTraceM "HPT" (ppr (ms_mod modSummary) $$ pprHPT hpt $$ ppr (isJust $ lookupHpt hpt (mkModuleName "Development.IDE.Core.Debouncer")) $$ text herald)
+                          _ -> "FOUND"-}
+ --           pprTraceM "HPT" (ppr (ms_mod modSummary) $$ pprHPT hpt $$ ppr (isJust $ lookupHpt hpt (mkModuleName "Development.IDE.Core.Debouncer")) $$ text herald)
+--            pprTraceM "Instances" (ppr $ hptInstances sess (const True))
             modSummary' <- initPlugins modSummary
+
+            env <- getSession
+            eps_stats1 <- liftIO (eps_stats <$> (hscEPS env))
+            liftIO $ print eps_stats1
             (warnings, tcm) <- withWarnings "typecheck" $ \tweak ->
                 GHC.typecheckModule $ enableTopLevelWarnings
                                     $ demoteIfDefer pm{pm_mod_summary = tweak modSummary'}
+
+            env <- getSession
+            eps_stats <- liftIO (eps_stats <$> (hscEPS env))
+            liftIO $ print eps_stats
             tcm2 <- mkTcModuleResult tcm
+            liftIO $ print warnings
             let errorPipeline = unDefer . hideDiag dflags
             return (map errorPipeline warnings, tcm2)
 
@@ -262,7 +274,7 @@ setupEnv tmsIn = do
     session <- getSession
 
     let mss = map (\t -> (tmrUnitId t, pm_mod_summary . tm_parsed_module . tmrModule $ t)) tms
-    pprTraceM "mod_sums" (ppr (map (ms_mod . snd) mss))
+--    pprTraceM "mod_sums" (ppr (map (ms_mod . snd) mss))
 
     -- set the target and module graph in the session
     let graph = mkModuleGraph (map snd mss)
@@ -270,10 +282,10 @@ setupEnv tmsIn = do
 
     -- Make modules available for others that import them,
     -- by putting them in the finder cache.
-    let uid = (thisInstalledUnitId $ hsc_dflags session)
-        ims  = map (\(uid, m) -> InstalledModule uid (moduleName (ms_mod m))) mss
+    let tuid = (thisInstalledUnitId $ hsc_dflags session)
+        ims  = map (\(uid, m) -> InstalledModule tuid (moduleName (ms_mod m))) mss
         ifrs = zipWith (\(_, ms) -> InstalledFound (ms_location ms)) mss ims
-    pprTraceM "ifrs" (ppr ims)
+--    pprTraceM "ifrs" (ppr ims)
     -- We have to create a new IORef here instead of modifying the existing IORef as
     -- it is shared between concurrent compilations.
     prevFinderCache <- liftIO $ readIORef $ hsc_FC session
@@ -284,7 +296,6 @@ setupEnv tmsIn = do
     newFinderCacheVar <- liftIO $ newIORef $! newFinderCache
     modifySession $ \s -> s { hsc_FC = newFinderCacheVar }
 
-    let uid' = fsToUnitId (installedUnitIdFS uid)
     -- load dependent modules, which must be in topological order.
     mapM_ loadModuleHome tms
 

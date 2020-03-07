@@ -283,6 +283,7 @@ typeCheckRule =
         pm <- use_ GetParsedModule file
         deps <- use_ GetDependencies file
         packageState <- hscEnv <$> use_ GhcSession file
+        liftIO $ print ("TYPECHECKING", file)
         -- Figure out whether we need TemplateHaskell or QuasiQuotes support
         let graph_needs_th_qq = needsTemplateHaskellOrQQ $ hsc_mod_graph packageState
             file_uses_th_qq = uses_th_qq $ ms_hspp_opts (pm_mod_summary pm)
@@ -296,7 +297,9 @@ typeCheckRule =
                   else uses_ TypeCheck (transitiveModuleDeps deps)
         setPriority priorityTypeCheck
         IdeOptions{ optDefer = defer} <- getIdeOptions
-        liftIO $ typecheckModule defer packageState tms pm
+        (diags, res) <- liftIO $ typecheckModule defer packageState tms pm
+        liftIO $ print (file, diags, isJust res)
+        return (diags, res)
     where
         uses_th_qq dflags = xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
         addByteCode :: Linkable -> TcModuleResult -> TcModuleResult
