@@ -56,6 +56,7 @@ import           Development.IDE.GHC.Error
 import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Spans.Type
+import qualified Data.ByteString.Char8 as BS
 
 import qualified GHC.LanguageExtensions as LangExt
 import           UniqSupply
@@ -351,7 +352,7 @@ loadGhcSession = do
         alwaysRerun
         val <- fun $ fromNormalizedFilePath file
         opts <- getIdeOptions
-        return ("" <$ optShakeFiles opts, ([], Just val))
+        return (Just (BS.pack $ show $ hash val), ([], Just val))
 
 
 getHieFileRule :: Rules ()

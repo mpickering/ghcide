@@ -154,6 +154,9 @@ instance Eq HscEnvEq where
 instance NFData HscEnvEq where
   rnf (HscEnvEq a b c) = rnf (hashUnique a) `seq` b `seq` c `seq` ()
 
+instance Hashable HscEnvEq where
+  hashWithSalt s (HscEnvEq a b c) = hashUnique a
+
 -- | Read a UTF8 file, with lenient decoding, so it will never raise a decoding error.
 readFileUtf8 :: FilePath -> IO T.Text
 readFileUtf8 f = T.decodeUtf8With T.lenientDecode <$> BS.readFile f

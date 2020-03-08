@@ -10,13 +10,10 @@ module Main(main) where
 
 
 import Packages
-import Debug.Trace
-import FastString
 import Module
 import Arguments
 import Data.Maybe
 import Data.List.Extra
-import Data.Void
 import System.FilePath
 import Control.Concurrent.Extra
 import Control.Exception
@@ -229,8 +226,9 @@ targetToFile is (TargetModule mod) = forM is $ \i -> do
     let fp = i </> (moduleNameSlashes mod) -<.> "hs"
     cfp <- canonicalizePath fp
     return (toNormalizedFilePath cfp, False)
-targetToFile is (TargetFile f _) = forM is $ \i ->
-  return (toNormalizedFilePath (i </> f), True)
+targetToFile is (TargetFile f _) = do
+  f' <- canonicalizePath f
+  return [(toNormalizedFilePath f', True)]
 
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
