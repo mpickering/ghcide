@@ -4,7 +4,6 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# LANGUAGE CPP #-} -- To get precise GHC version
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE StandaloneDeriving #-}
 
 module Main(main) where
 

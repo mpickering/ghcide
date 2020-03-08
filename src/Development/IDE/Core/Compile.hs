@@ -3,7 +3,6 @@
 
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE StandaloneDeriving #-}
 #include "ghc-api-version.h"
 
 -- | Based on https://ghc.haskell.org/trac/ghc/wiki/Commentary/Compiler/API.
@@ -95,6 +94,7 @@ computePackageDeps env pkg = do
             T.pack $ "unknown package: " ++ show pkg]
         Just pkgInfo -> return $ Right $ depends pkgInfo
 
+
 -- | Typecheck a single module using the supplied dependencies and packages.
 typecheckModule
     :: IdeDefer
@@ -112,13 +112,11 @@ typecheckModule (IdeDefer defer) packageState deps pm =
             let modSummary = pm_mod_summary pm
                 dflags = ms_hspp_opts modSummary
             modSummary' <- initPlugins modSummary
-
             (warnings, tcm) <- withWarnings "typecheck" $ \tweak ->
                 GHC.typecheckModule $ enableTopLevelWarnings
                                     $ demoteIfDefer pm{pm_mod_summary = tweak modSummary'}
 
             tcm2 <- mkTcModuleResult tcm
-            --liftIO $ print warnings
             let errorPipeline = unDefer . hideDiag dflags
             return (map errorPipeline warnings, tcm2)
 
@@ -256,7 +254,6 @@ setupEnv tmsIn = do
     session <- getSession
 
     let mss = map (pm_mod_summary . tm_parsed_module . tmrModule) tms
-    --pprTraceM "mod_sums" (ppr (map ms_mod mss))
 
     -- set the target and module graph in the session
     let graph = mkModuleGraph mss
@@ -266,7 +263,6 @@ setupEnv tmsIn = do
     -- by putting them in the finder cache.
     let ims  = map (InstalledModule (thisInstalledUnitId $ hsc_dflags session) . moduleName . ms_mod) mss
         ifrs = zipWith (\ms -> InstalledFound (ms_location ms)) mss ims
-    --pprTraceM "ifrs" (ppr ims)
     -- We have to create a new IORef here instead of modifying the existing IORef as
     -- it is shared between concurrent compilations.
     prevFinderCache <- liftIO $ readIORef $ hsc_FC session
@@ -281,7 +277,6 @@ setupEnv tmsIn = do
     mapM_ loadModuleHome tms
 
 
-
 -- | Load a module, quickly. Input doesn't need to be desugared.
 -- A module must be loaded before dependent modules can be typechecked.
 -- This variant of loadModuleHome will *never* cause recompilation, it just
@@ -291,25 +286,11 @@ loadModuleHome
     => TcModuleResult
     -> m ()
 loadModuleHome tmr = modifySession $ \e ->
---    pprTrace "loadModuleHome" (ppr $ moduleUnitId $ mi_module  (hm_iface mod_info)) $
       e { hsc_HPT = addToHpt (hsc_HPT e) mod mod_info }
   where
     ms       = pm_mod_summary . tm_parsed_module . tmrModule $ tmr
     mod_info = tmrModInfo tmr
     mod      = ms_mod_name ms
-    {-
-    mod_info' = mod_info { hm_iface = setModuleUnit (hm_iface mod_info ) }
-    setUid m
-      | moduleName m `elem` deps = m { moduleUnitId = uid }
-      | otherwise = m
-    setModuleUnit iface = iface { mi_module = setUid (mi_module iface)
-                                , mi_deps = fix_dep_fis (mi_deps iface) }
-
-
-    fix_dep_fis ds =  ds { dep_finsts = map setUid (dep_finsts ds)
-                         , dep_orphs = map setUid (dep_orphs ds) }
-    -}
-
 
 
 -- | GhcMonad function to chase imports of a module given as a StringBuffer. Returns given module's

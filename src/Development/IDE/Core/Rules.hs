@@ -157,7 +157,6 @@ getLocatedImportsRule =
         let imports = [(False, imp) | imp <- ms_textual_imps ms] ++ [(True, imp) | imp <- ms_srcimps ms]
         env_eq <- use_ GhcSession file
         let env = hscEnv env_eq
-        liftIO $ print (map fst (deps env_eq))
         let import_dirs = map (importPaths . snd ) (deps env_eq)
         let dflags = addRelativeImport file pm $ hsc_dflags env
         opt <- getIdeOptions
@@ -299,7 +298,6 @@ typeCheckRule =
         setPriority priorityTypeCheck
         IdeOptions{ optDefer = defer} <- getIdeOptions
         (diags, res) <- liftIO $ typecheckModule defer packageState tms pm
-        liftIO $ print (file, diags, isJust res)
         return (diags, res)
     where
         uses_th_qq dflags = xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
