@@ -334,6 +334,10 @@ loadSession dir = do
 -- are going to deal with ourselves. For example, if a executable depends
 -- on a library component, then this function will remove the library flag
 -- from the package flags for the executable
+--
+-- There are several places in GHC (for example the call to hptInstances in
+-- tcRnImports) which assume that all modules in the HPT have the same unit
+-- ID. Therefore we create a fake one and give them all the same unit id.
 removeInplacePackages :: [InstalledUnitId] -> DynFlags -> (DynFlags, [InstalledUnitId])
 removeInplacePackages us df = (df { packageFlags = ps
                                   , thisInstalledUnitId = fake_uid }, uids)
