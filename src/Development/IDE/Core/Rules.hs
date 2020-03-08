@@ -284,7 +284,7 @@ typeCheckRule =
         pm <- use_ GetParsedModule file
         deps <- use_ GetDependencies file
         packageState <- hscEnv <$> use_ GhcSession file
-        liftIO $ print ("TYPECHECKING", file)
+        --liftIO $ print ("TYPECHECKING", file)
         -- Figure out whether we need TemplateHaskell or QuasiQuotes support
         let graph_needs_th_qq = needsTemplateHaskellOrQQ $ hsc_mod_graph packageState
             file_uses_th_qq = uses_th_qq $ ms_hspp_opts (pm_mod_summary pm)
@@ -351,7 +351,8 @@ loadGhcSession = do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
         alwaysRerun
         val <- fun $ fromNormalizedFilePath file
-        opts <- getIdeOptions
+        -- TODO: What was this doing before?
+--        opts <- getIdeOptions
         return (Just (BS.pack $ show $ hash val), ([], Just val))
 
 

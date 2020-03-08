@@ -95,8 +95,6 @@ computePackageDeps env pkg = do
             T.pack $ "unknown package: " ++ show pkg]
         Just pkgInfo -> return $ Right $ depends pkgInfo
 
-deriving instance Show EpsStats
-
 -- | Typecheck a single module using the supplied dependencies and packages.
 typecheckModule
     :: IdeDefer
@@ -111,30 +109,16 @@ typecheckModule (IdeDefer defer) packageState deps pm =
     runGhcEnv packageState $
         catchSrcErrors "typecheck" $ do
             setupEnv deps
-            hpt <- hsc_HPT <$> getSession
             let modSummary = pm_mod_summary pm
                 dflags = ms_hspp_opts modSummary
-            {-sess <- getSession
-            res <- liftIO $ findHomeModule sess (mkModuleName "Development.IDE.Core.Debouncer")
-            let herald = case res of
-                          NotFound {} -> "NOT FOUND"
-                          _ -> "FOUND"-}
- --           pprTraceM "HPT" (ppr (ms_mod modSummary) $$ pprHPT hpt $$ ppr (isJust $ lookupHpt hpt (mkModuleName "Development.IDE.Core.Debouncer")) $$ text herald)
---            pprTraceM "Instances" (ppr $ hptInstances sess (const True))
             modSummary' <- initPlugins modSummary
 
-            env <- getSession
-            eps_stats1 <- liftIO (eps_stats <$> (hscEPS env))
---            liftIO $ print eps_stats1
             (warnings, tcm) <- withWarnings "typecheck" $ \tweak ->
                 GHC.typecheckModule $ enableTopLevelWarnings
                                     $ demoteIfDefer pm{pm_mod_summary = tweak modSummary'}
 
-            env <- getSession
-            eps_stats <- liftIO (eps_stats <$> (hscEPS env))
---            liftIO $ print eps_stats
             tcm2 <- mkTcModuleResult tcm
-            liftIO $ print warnings
+            --liftIO $ print warnings
             let errorPipeline = unDefer . hideDiag dflags
             return (map errorPipeline warnings, tcm2)
 
@@ -280,8 +264,7 @@ setupEnv tmsIn = do
 
     -- Make modules available for others that import them,
     -- by putting them in the finder cache.
-    let uid = (thisInstalledUnitId $ hsc_dflags session)
-        ims  = map (InstalledModule (thisInstalledUnitId $ hsc_dflags session) . moduleName . ms_mod) mss
+    let ims  = map (InstalledModule (thisInstalledUnitId $ hsc_dflags session) . moduleName . ms_mod) mss
         ifrs = zipWith (\ms -> InstalledFound (ms_location ms)) mss ims
     --pprTraceM "ifrs" (ppr ims)
     -- We have to create a new IORef here instead of modifying the existing IORef as

@@ -8,7 +8,8 @@
 
 module Main(main) where
 
-
+import Data.IORef
+import NameCache
 import Packages
 import Module
 import Arguments
@@ -55,11 +56,11 @@ import Development.Shake (Action, action)
 import qualified Data.HashSet as HashSet
 import qualified Data.Map.Strict as Map
 import Data.Either
-import Outputable (pprTraceM, ppr, pprTrace, text)
+import Outputable (pprTraceM, ppr, text)
 
 import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
-import DynFlags (parseDynamicFlagsFull, flagsPackage, flagsDynamic, unsafeGlobalDynFlags, PackageFlag(..), PackageArg(..), setGeneralFlag', PackageDBFlag(..))
+import DynFlags (PackageFlag(..), PackageArg(..), PackageDBFlag(..))
 import GHC hiding (def)
 import qualified GHC.Paths
 
@@ -141,7 +142,7 @@ main = do
 
         putStrLn "\nStep 4/6: Type checking the files"
         setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
-        results <- runActionSync ide $ uses TypeCheck (map toNormalizedFilePath files)
+        _ <- runActionSync ide $ uses TypeCheck (map toNormalizedFilePath files)
 --        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "src/Development/IDE/Core/Rules.hs"
 --        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "exe/Main.hs"
         return ()
@@ -192,44 +193,21 @@ emptyHscEnv = do
     initDynLinker env
     pure env
 
-addPackageOpts :: DynFlags -> DynFlags -> DynFlags
-addPackageOpts cur_df df = do
-        -- only update the package flags
-        pprTrace "addPackageOpts" (ppr $  packageFlags df) $
-          (cur_df { packageFlags = packageFlags df ++ packageFlags cur_df
-                  -- Not sure these reversals are necessary
-                  , packageDBFlags = reverse ( reverse(packageDBFlags cur_df) ++ reverse (packageDBFlags df))
-                  -- Enabling OneShot mode disables the check in the
-                  -- interface file loader that a home package has the same
-                  -- unit id as the unit currently being compiled.
-                  , ghcMode = OneShot } )
-
-
-tweakHscEnv :: HscEnv -> DynFlags -> IO HscEnv
-tweakHscEnv hscEnv df' = do
-    runGhcEnv hscEnv $ do
-        modifySession $ \h -> h { hsc_dflags = df', hsc_IC = (hsc_IC h) { ic_dflags = df' } }
-        s <- getSession
-        return s
-
--- Set all of DynFlags options apart from stuff set by initPackages
-setNonPackageOptions :: HscEnv -> DynFlags -> DynFlags
-setNonPackageOptions hscEnv df =
-    let pkg_df = hsc_dflags hscEnv
-    in
-      df { pkgDatabase = pkgDatabase pkg_df, pkgState = pkgState pkg_df, thisUnitIdInsts_ = thisUnitIdInsts_ pkg_df }
-      -- At this point here we should alter the module visibility of the
-      -- packages so it's only the right ones made available.
-
+-- Convert a target to a list of potential absolute paths.
+-- A TargetModule can be anywhere listed by the supplied include
+-- directories
+-- A target file is a relative path but with a specific prefix so just need
+-- to canonicalise it.
 targetToFile :: [FilePath] -> TargetId -> IO [(NormalizedFilePath, Bool)]
 targetToFile is (TargetModule mod) = forM is $ \i -> do
     let fp = i </> (moduleNameSlashes mod) -<.> "hs"
     cfp <- canonicalizePath fp
     return (toNormalizedFilePath cfp, False)
-targetToFile is (TargetFile f _) = do
+targetToFile _ (TargetFile f _) = do
   f' <- canonicalizePath f
   return [(toNormalizedFilePath f', True)]
 
+setNameCache :: IORef NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
 loadSession :: FilePath -> IO (FilePath -> Action HscEnvEq)
@@ -250,7 +228,9 @@ loadSession dir = do
         hscEnv <- emptyHscEnv
         (df, targets) <- runGhcEnv hscEnv $ do
                           (df, target) <- addCmdOpts (componentOptions opts) (hsc_dflags hscEnv)
-                          (df', pl) <- liftIO $ initPackages df
+                          -- initPackages parses the -package flags and
+                          -- sets up the visibility for each component.
+                          (df', _) <- liftIO $ initPackages df
                           return (df' , target)
         -- Now lookup to see whether we are adding to an exisiting HscEnv
         -- or making a new one. The lookup returns the HscEnv and a list of
@@ -269,12 +249,6 @@ loadSession dir = do
                 new_deps' = map do_one new_deps
             -- Make a new HscEnv with all the right packages loaded, none
             -- of the
-            start_df <- hsc_EPS <$> emptyHscEnv
-            -- Ideally we would start from the empty dflags here but I am
-            -- missing some options which lead to confusing errors.
-            -- Probably the hide-all-package flag as the cabal store
-            -- contains a lot of gunk
-            --let all_df = foldl1' addPackageOpts (map (fst . (\(_, d, _) -> d)) new_deps')
             hscEnv <- case oldDeps of
                         Nothing -> emptyHscEnv
                         Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv
@@ -290,8 +264,8 @@ loadSession dir = do
             -- Now overwrite the other dflags options but with an
             -- initialised package state to get a proper HscEnv for each
             -- component
-            let do_one' hsc (uid, (df, uids), ts) = (uid, (df, uids, ts))
-                new_deps'' = map (do_one' ()) new_deps'
+            let do_one' (uid, (df, uids), ts) = (uid, (df, uids, ts))
+                new_deps'' = map do_one' new_deps'
 
             pure (Map.insert hieYaml (newHscEnv, new_deps) m, (head new_deps'', tail new_deps''))
 
@@ -300,10 +274,8 @@ loadSession dir = do
         (new, old_deps) <- packageSetup (hieYaml, opts)
         Just (hscEnv, _) <- fmap (Map.lookup hieYaml) $ readVar hscEnvs
         -- TODO Handle the case where there is no hie.yaml
-        let uids = map (\(iuid, (df, uis, targets)) -> (iuid, df)) (new : old_deps)
-        let new_cache (iuid, (df, uis, targets)) =  do
-              let mnp = listVisibleModuleNames  df
---              pprTraceM "mnp" (ppr mnp)
+        let uids = map (\(iuid, (df, _uis, _targets)) -> (iuid, df)) (new : old_deps)
+        let new_cache (_iuid, (df, _uis, targets)) =  do
               let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
               res <- newHscEnvEq hscEnv' uids
 
@@ -343,13 +315,17 @@ loadSession dir = do
         hieYaml <- cradleLoc file
         sessionOpts (hieYaml, file)
 
+-- This function removes all the -package flags which refer to packages we
+-- are going to deal with ourselves. For example, if a executable depends
+-- on a library component, then this function will remove the library flag
+-- from the package flags for the executable
 removeInplacePackages :: [InstalledUnitId] -> DynFlags -> (DynFlags, [InstalledUnitId])
 removeInplacePackages us df = (df { packageFlags = ps
                                   , thisInstalledUnitId = fake_uid }, uids)
   where
     (uids, ps) = partitionEithers (map go (packageFlags df))
     fake_uid = toInstalledUnitId (stringToUnitId "fake_uid")
-    go p@(ExposePackage s (UnitIdArg u) _) = if (toInstalledUnitId u `elem` us) then Left (toInstalledUnitId u) else Right p
+    go p@(ExposePackage _ (UnitIdArg u) _) = if (toInstalledUnitId u `elem` us) then Left (toInstalledUnitId u) else Right p
     go p = Right p
 
 -- | Memoize an IO function, with the characteristics:
