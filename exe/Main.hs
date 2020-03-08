@@ -212,7 +212,9 @@ setNameCache nc hsc = hsc { hsc_NC = nc }
 
 loadSession :: FilePath -> IO (FilePath -> Action HscEnvEq)
 loadSession dir = do
+    -- Mapping from hie.yaml file to HscEnv, one per hie.yaml file
     hscEnvs <- newVar Map.empty
+    -- Mapping from a filepath to HscEnv
     fileToFlags <- newVar Map.empty
     -- This caches the mapping from Mod.hs -> hie.yaml
     cradleLoc <- memoIO $ \v -> do
@@ -223,6 +225,7 @@ loadSession dir = do
         res' <- traverse makeAbsolute res
         return $ normalise <$> res'
 
+    -- Create a new HscEnv from a set of options
     packageSetup <- return $ \(hieYaml, opts) -> do
         -- Parse DynFlags for the newly discovered component
         hscEnv <- emptyHscEnv
@@ -237,9 +240,14 @@ loadSession dir = do
         -- information about other components loaded into the HscEnv
         -- (unitId, DynFlag, Targets)
         modifyVar hscEnvs $ \m -> do
+            -- Just deps if there's already an HscEnv
+            -- Nothing is it's the first time we are making an HscEnv
             let oldDeps = Map.lookup hieYaml m
-            let
+            let -- Add the raw information about this component to the list
+                -- We will modify the unitId and DynFlags used for
+                -- compilation but these are the true source of information
                 new_deps = (thisInstalledUnitId df, df, targets) : maybe [] snd oldDeps
+                -- Get all the unit-ids for things in this component
                 inplace = map (\(a, _, _) -> a) new_deps
                 -- Remove all inplace dependencies from package flags for
                 -- components in this HscEnv
@@ -247,19 +255,17 @@ loadSession dir = do
                 -- All deps, but without any packages which are also loaded
                 -- into memory
                 new_deps' = map do_one new_deps
-            -- Make a new HscEnv with all the right packages loaded, none
-            -- of the
+            -- Make a new HscEnv, we have to recompile everything from
+            -- scratch again (for now)
+            -- It's important to keep the same NameCache though for reasons
+            -- that I do not fully understand
             hscEnv <- case oldDeps of
                         Nothing -> emptyHscEnv
                         Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv
             newHscEnv <-
+              -- Add the options for the current component to the HscEnv
               runGhcEnv hscEnv $ do
-                pprTraceM "package" (ppr $ nub (packageFlags df))
-                --pprTraceM "package_db" (text $ show $ nub (packageDBFlags all_df))
-                --pprTraceM "package_db" (text $ show $ (packageDBFlags all_df))
-                setSessionDynFlags df -- (all_df { --packageFlags = nub (packageFlags all_df)
-                                              --, packageDBFlags = reverse (nub (reverse $ packageDBFlags all_df))
-                                        --      , pkgDatabase = Nothing })
+                setSessionDynFlags df
                 getSession
             -- Now overwrite the other dflags options but with an
             -- initialised package state to get a proper HscEnv for each
@@ -267,26 +273,35 @@ loadSession dir = do
             let do_one' (uid, (df, uids), ts) = (uid, (df, uids, ts))
                 new_deps'' = map do_one' new_deps'
 
-            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (head new_deps'', tail new_deps''))
+            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps'', tail new_deps''))
 
 
     session <- return $ \(hieYaml, opts) -> do
-        (new, old_deps) <- packageSetup (hieYaml, opts)
-        Just (hscEnv, _) <- fmap (Map.lookup hieYaml) $ readVar hscEnvs
+        (hscEnv, new, old_deps) <- packageSetup (hieYaml, opts)
         -- TODO Handle the case where there is no hie.yaml
         let uids = map (\(iuid, (df, _uis, _targets)) -> (iuid, df)) (new : old_deps)
+
+        -- For each component, now make a new HscEnvEq which contains the
+        -- HscEnv for the hie.yaml file but the DynFlags for that component
+        --
+        -- Then look at the targets for each component and create a map
+        -- from FilePath to the HscEnv
         let new_cache (_iuid, (df, _uis, targets)) =  do
-              let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
+              let hscEnv' = hscEnv { hsc_dflags = df
+                                   , hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
+
               res <- newHscEnvEq hscEnv' uids
 
               let is = importPaths df
               ctargets <- concatMapM (targetToFile is  . targetId) targets
               pprTraceM "TARGETS" (ppr (map (text . show) ctargets))
               let xs = map (,res) ctargets
-              print (map (fromNormalizedFilePath . fst . fst) xs)
               return (xs, res)
 
+        -- New HscEnv for the component in question
         (cs, res) <- new_cache new
+        -- Modified cache targets for everything else in the hie.yaml file
+        -- which now uses the same EPS and so on
         cached_targets <- concatMapM (fmap fst . new_cache) old_deps
         modifyVar_ fileToFlags $ \var -> do
             pure $ Map.insert hieYaml (cs ++ cached_targets) var
