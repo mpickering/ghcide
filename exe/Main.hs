@@ -143,9 +143,10 @@ main = do
         ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger minBound) debouncer (defaultIdeOptions $ return grab) vfs
 
         putStrLn "\nStep 4/6: Type checking the files"
-        --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
-        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "src/Development/IDE/Core/Rules.hs"
-        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "exe/Main.hs"
+        setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
+        results <- runActionSync ide $ uses TypeCheck (map toNormalizedFilePath files)
+--        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "src/Development/IDE/Core/Rules.hs"
+--        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath "exe/Main.hs"
         return ()
 
 
@@ -223,9 +224,13 @@ setNonPackageOptions hscEnv df =
       -- At this point here we should alter the module visibility of the
       -- packages so it's only the right ones made available.
 
-targetToFile :: TargetId -> (NormalizedFilePath, Bool)
-targetToFile (TargetModule mod) = (toNormalizedFilePath $ (moduleNameSlashes mod) -<.> "hs", False)
-targetToFile (TargetFile f _) = (toNormalizedFilePath f, True)
+targetToFile :: [FilePath] -> TargetId -> IO [(NormalizedFilePath, Bool)]
+targetToFile is (TargetModule mod) = forM is $ \i -> do
+    let fp = i </> (moduleNameSlashes mod) -<.> "hs"
+    cfp <- canonicalizePath fp
+    return (toNormalizedFilePath cfp, False)
+targetToFile is (TargetFile f _) = forM is $ \i ->
+  return (toNormalizedFilePath (i </> f), True)
 
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
@@ -303,8 +308,11 @@ loadSession dir = do
 --              pprTraceM "mnp" (ppr mnp)
               let hscEnv' =  hscEnv { hsc_dflags = df, hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
               res <- newHscEnvEq hscEnv' uids
-              pprTraceM "TARGETS" (ppr (map (show . targetToFile . targetId) targets))
-              let xs = map (\target -> (targetToFile $ targetId target,res)) targets
+
+              let is = importPaths df
+              ctargets <- concatMapM (targetToFile is  . targetId) targets
+              pprTraceM "TARGETS" (ppr (map (text . show) ctargets))
+              let xs = map (,res) ctargets
               print (map (fromNormalizedFilePath . fst . fst) xs)
               return (xs, res)
 
@@ -321,8 +329,9 @@ loadSession dir = do
         fm <- readVar fileToFlags
         let mv = Map.lookup hieYaml fm
         let v = fromMaybe [] mv
+        cfp <- liftIO $ canonicalizePath file
         -- We sort so exact matches come first.
-        case find (\((f', exact), _) -> fromNormalizedFilePath f' == file || not exact && fromNormalizedFilePath f' `isSuffixOf` file) v of
+        case find (\((f', exact), _) -> fromNormalizedFilePath f' == cfp || not exact && fromNormalizedFilePath f' `isSuffixOf` cfp) v of
             Just (_, opts) -> do
                 putStrLn $ "Cached component of " <> show file
                 pure opts

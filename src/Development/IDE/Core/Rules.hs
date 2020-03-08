@@ -348,6 +348,7 @@ loadGhcSession = do
         liftIO $ GhcSessionFun <$> optGhcSession opts
     defineEarlyCutoff $ \GhcSession file -> do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
+        alwaysRerun
         val <- fun $ fromNormalizedFilePath file
         opts <- getIdeOptions
         return ("" <$ optShakeFiles opts, ([], Just val))
