@@ -264,7 +264,7 @@ loadSession dir = do
             newHscEnv <-
               -- Add the options for the current component to the HscEnv
               runGhcEnv hscEnv $ do
-                setSessionDynFlags df
+                _ <- setSessionDynFlags df
                 getSession
             -- Now overwrite the other dflags options but with an
             -- initialised package state to get a proper HscEnv for each
@@ -293,7 +293,7 @@ loadSession dir = do
 
               let is = importPaths df
               ctargets <- concatMapM (targetToFile is  . targetId) targets
-              pprTraceM "TARGETS" (ppr (map (text . show) ctargets))
+              --pprTraceM "TARGETS" (ppr (map (text . show) ctargets))
               let xs = map (,res) ctargets
               return (xs, res)
 
