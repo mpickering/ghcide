@@ -347,6 +347,10 @@ loadGhcSession = do
     defineNoFile $ \GhcSessionIO -> do
         opts <- getIdeOptions
         liftIO $ GhcSessionFun <$> optGhcSession opts
+    -- This function should always be rerun because it consults a cache to
+    -- see what HscEnv needs to be used for the file, which can change.
+    -- However, it should also cut-off early if it's the same HscEnv as
+    -- last time
     defineEarlyCutoff $ \GhcSession file -> do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
         alwaysRerun
