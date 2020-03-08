@@ -59,7 +59,7 @@ import Outputable (pprTraceM, ppr, text)
 
 import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
-import DynFlags (PackageFlag(..), PackageArg(..), PackageDBFlag(..))
+import DynFlags (PackageFlag(..), PackageArg(..), PackageDBFlag(..), gopt_unset)
 import GHC hiding (def)
 import qualified GHC.Paths
 
@@ -233,7 +233,8 @@ loadSession dir = do
                           -- initPackages parses the -package flags and
                           -- sets up the visibility for each component.
                           (df', _) <- liftIO $ initPackages df
-                          return (df' , target)
+                          let df'' = gopt_unset df' Opt_WarnIsError
+                          return (df'' , target)
         -- Now lookup to see whether we are adding to an exisiting HscEnv
         -- or making a new one. The lookup returns the HscEnv and a list of
         -- information about other components loaded into the HscEnv
@@ -258,6 +259,7 @@ loadSession dir = do
             -- scratch again (for now)
             -- It's important to keep the same NameCache though for reasons
             -- that I do not fully understand
+            print ("Making new HscEnv" ++ (show inplace))
             hscEnv <- case oldDeps of
                         Nothing -> emptyHscEnv
                         Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv

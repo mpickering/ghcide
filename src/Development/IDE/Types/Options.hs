@@ -85,7 +85,7 @@ defaultIdeOptions session = IdeOptions
     ,optReportProgress = IdeReportProgress False
     ,optLanguageSyntax = "haskell"
     ,optNewColonConvention = False
-    ,optDefer = IdeDefer False
+    ,optDefer = IdeDefer True
     }
 
 

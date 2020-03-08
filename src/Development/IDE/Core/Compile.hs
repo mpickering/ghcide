@@ -113,7 +113,7 @@ typecheckModule (IdeDefer defer) packageState deps pm =
                 dflags = ms_hspp_opts modSummary
             modSummary' <- initPlugins modSummary
             (warnings, tcm) <- withWarnings "typecheck" $ \tweak ->
-                GHC.typecheckModule $ enableTopLevelWarnings
+                GHC.typecheckModule -- $ enableTopLevelWarnings
                                     $ demoteIfDefer pm{pm_mod_summary = tweak modSummary'}
 
             tcm2 <- mkTcModuleResult tcm
