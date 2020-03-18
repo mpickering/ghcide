@@ -11,9 +11,9 @@ module Development.IDE.GHC.Util
   , modifyDynFlags
   , runGhcEnv
   , evalGhcEnv
-  ,
+  , deps
     -- * GHC wrappers
-    prettyPrint
+  , prettyPrint
   , printRdrName
   , printName
   , ParseResult(..)
@@ -167,29 +167,33 @@ moduleImportPath (takeDirectory . fromNormalizedFilePath -> pathDir) pm
 
 -- | An 'HscEnv' with equality. Two values are considered equal
 --   if they are created with the same call to 'newHscEnvEq'.
-data HscEnvEq = HscEnvEq Unique HscEnv
+data HscEnvEq = HscEnvEq Unique
+                         HscEnv
+                         [(InstalledUnitId, DynFlags)] -- In memory components for this HscEnv
 
 -- | Unwrap an 'HsEnvEq'.
 hscEnv :: HscEnvEq -> HscEnv
-hscEnv (HscEnvEq _ x) = x
+hscEnv (HscEnvEq _ x _) = x
+
+deps :: HscEnvEq -> [(InstalledUnitId, DynFlags)]
+deps (HscEnvEq _ _ u) = u
 
 -- | Wrap an 'HscEnv' into an 'HscEnvEq'.
-newHscEnvEq :: HscEnv -> IO HscEnvEq
-newHscEnvEq e = do
-  u <- newUnique
-  return $ HscEnvEq u e
+newHscEnvEq :: HscEnv -> [(InstalledUnitId, DynFlags)] -> IO HscEnvEq
+newHscEnvEq e uids = do u <- newUnique; return $ HscEnvEq u e uids
 
 instance Show HscEnvEq where
-  show (HscEnvEq a _) = "HscEnvEq " ++ show (hashUnique a)
+  show (HscEnvEq a _ _) = "HscEnvEq " ++ show (hashUnique a)
 
 instance Eq HscEnvEq where
-  HscEnvEq a _ == HscEnvEq b _ = a == b
+  HscEnvEq a _ _ == HscEnvEq b _ _ = a == b
 
 instance NFData HscEnvEq where
-  rnf (HscEnvEq a b) = rnf (hashUnique a) `seq` b `seq` ()
+  rnf (HscEnvEq a b c) = rnf (hashUnique a) `seq` b `seq` c `seq` ()
 
 instance Hashable HscEnvEq where
-  hashWithSalt salt (HscEnvEq u _) = hashWithSalt salt u
+  hashWithSalt s (HscEnvEq a _b _c) = hashWithSalt s a
+
 
 -- Fake instance needed to persuade Shake to accept this type as a key.
 -- No harm done as ghcide never persists these keys currently

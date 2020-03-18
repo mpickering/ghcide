@@ -135,7 +135,7 @@ typecheckModule (IdeDefer defer) hsc depsIn pm = do
         tcm2 <- mkTcModuleResult tcm
         let errorPipeline = unDefer . hideDiag dflags
         return (map errorPipeline warnings, tcm2)
-    where
+      where
         demoteIfDefer = if defer then demoteTypeErrorsToWarnings else id
 
 initPlugins :: GhcMonad m => ModSummary -> m ModSummary
