@@ -186,10 +186,10 @@ showEvent lock (EventFileDiagnostics (toNormalizedFilePath -> file) diags) =
 showEvent lock e = withLock lock $ print e
 
 
-cradleToSessionOpts :: Cradle a -> FilePath -> IO ComponentOptions
-cradleToSessionOpts cradle file = do
+cradleToSessionOpts :: Lock -> Cradle a -> FilePath -> IO ComponentOptions
+cradleToSessionOpts lock cradle file = do
     let showLine s = putStrLn ("> " ++ s)
-    cradleRes <- runCradle (cradleOptsProg cradle) showLine file
+    cradleRes <- withLock lock $ mask $ \_ -> runCradle (cradleOptsProg cradle) showLine file
     opts <- case cradleRes of
         CradleSuccess r -> pure r
         CradleFail err -> throwIO err
@@ -329,6 +329,7 @@ loadSession dir = liftIO $ do
         return res
 
     lock <- newLock
+    cradle_lock <- newLock
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     sessionOpts <- return $ \(hieYaml, file) -> do
@@ -344,7 +345,7 @@ loadSession dir = liftIO $ do
             Nothing-> do
                 putStrLn $ "Shelling out to cabal " <> show file
                 cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
-                opts <- cradleToSessionOpts cradle file
+                opts <- cradleToSessionOpts cradle_lock cradle file
                 print opts
                 session (hieYaml, opts)
     return $ \file -> liftIO $ withLock lock $ do
