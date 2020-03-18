@@ -481,7 +481,7 @@ getObjectFileRule = define $ \GetObjectFile f -> do
         Nothing -> return (raw_diags ++ diags, Nothing)
         Just _tmr -> do
           let linkable = LM (error "don't check") (ms_mod ms) [DotO oFile]
-          return ([], Just $ linkable)
+          return (diags, Just $ linkable)
 
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.
