@@ -53,6 +53,7 @@ import Paths_ghcide
 import Development.GitRev
 import Development.Shake (Action,  action)
 import qualified Data.HashSet as HashSet
+import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as Map
 import Data.Either
 --import Outputable (pprTraceM, ppr, text)
@@ -325,7 +326,7 @@ loadSession dir = liftIO $ do
         -- which now uses the same EPS and so on
         cached_targets <- concatMapM (fmap fst . new_cache) old_deps
         modifyVar_ fileToFlags $ \var -> do
-            pure $ Map.insert hieYaml (cs ++ cached_targets) var
+            pure $ Map.insert hieYaml (HM.fromList (cs ++ cached_targets))var
         return res
 
     lock <- newLock
@@ -335,12 +336,12 @@ loadSession dir = liftIO $ do
     sessionOpts <- return $ \(hieYaml, file) -> do
         fm <- readVar fileToFlags
         let mv = Map.lookup hieYaml fm
-        let v = fromMaybe [] mv
+        let v = fromMaybe HM.empty mv
         cfp <- liftIO $ canonicalizePath file
         -- We sort so exact matches come first.
-        case find (\(f', _) -> fromNormalizedFilePath f' == cfp) v of
-            Just (_, opts) -> do
-                putStrLn $ "Cached component of " <> show file
+        case HM.lookup (toNormalizedFilePath cfp) v of
+            Just opts -> do
+                --putStrLn $ "Cached component of " <> show file
                 pure opts
             Nothing-> do
                 putStrLn $ "Shelling out to cabal " <> show file
