@@ -62,6 +62,7 @@ import           Development.IDE.GHC.Error
 import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Spans.Type
+import qualified Data.ByteString.Char8 as BS
 
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
@@ -241,11 +242,13 @@ getLocatedImportsRule =
     define $ \GetLocatedImports file -> do
         ms <- use_ GetModSummary file
         let imports = [(False, imp) | imp <- ms_textual_imps ms] ++ [(True, imp) | imp <- ms_srcimps ms]
-        env <- hscEnv <$> use_ GhcSession file
+        env_eq <- use_ GhcSession file
+        let env = hscEnv env_eq
+        let import_dirs = map (importPaths . snd ) (deps env_eq)
         let dflags = addRelativeImport file (moduleName $ ms_mod ms) $ hsc_dflags env
         opt <- getIdeOptions
         (diags, imports') <- fmap unzip $ forM imports $ \(isSource, (mbPkgName, modName)) -> do
-            diagOrImp <- locateModule dflags (optExtensions opt) getFileExists modName mbPkgName isSource
+            diagOrImp <- locateModule dflags import_dirs (optExtensions opt) getFileExists modName mbPkgName isSource
             case diagOrImp of
                 Left diags -> pure (diags, Left (modName, Nothing))
                 Right (FileImport path) -> pure ([], Left (modName, Just path))
@@ -490,11 +493,17 @@ loadGhcSession = do
     defineNoFile $ \GhcSessionIO -> do
         opts <- getIdeOptions
         GhcSessionFun <$> optGhcSession opts
+    -- This function should always be rerun because it consults a cache to
+    -- see what HscEnv needs to be used for the file, which can change.
+    -- However, it should also cut-off early if it's the same HscEnv as
+    -- last time
     defineEarlyCutoff $ \GhcSession file -> do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
+        alwaysRerun
         val <- fun $ fromNormalizedFilePath file
-        opts <- getIdeOptions
-        return ("" <$ optShakeFiles opts, ([], Just val))
+        -- TODO: What was this doing before?
+--        opts <- getIdeOptions
+        return (Just (BS.pack $ show $ hash val), ([], Just val))
 
 getHiFileRule :: Rules ()
 getHiFileRule = defineEarlyCutoff $ \GetHiFile f -> do
