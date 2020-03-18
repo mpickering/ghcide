@@ -51,11 +51,11 @@ import System.Exit
 import HIE.Bios.Environment (addCmdOpts)
 import Paths_ghcide
 import Development.GitRev
-import Development.Shake (Action, Rules, action)
+import Development.Shake (Action,  action)
 import qualified Data.HashSet as HashSet
 import qualified Data.Map.Strict as Map
 import Data.Either
-import Outputable (pprTraceM, ppr, text)
+--import Outputable (pprTraceM, ppr, text)
 import qualified Crypto.Hash.SHA1               as H
 import qualified Data.ByteString.Char8          as B
 import           Data.ByteString.Base16         (encode)
@@ -65,17 +65,14 @@ import           DynFlags                       (gopt_set, gopt_unset,
 
 import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
-import DynFlags (PackageFlag(..), PackageArg(..), PackageDBFlag(..), gopt_unset)
+import DynFlags (PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
 import qualified GHC.Paths
 
 import           HIE.Bios.Cradle
 import           HIE.Bios.Types
-import Linker
 import System.Directory
 
-
-import HIE.Bios
 --import Rules
 --import RuleTypes
 --
@@ -213,18 +210,21 @@ emptyHscEnv = do
 -- directories
 -- A target file is a relative path but with a specific prefix so just need
 -- to canonicalise it.
-targetToFile :: [FilePath] -> TargetId -> IO [(NormalizedFilePath, Bool)]
+targetToFile :: [FilePath] -> TargetId -> IO [NormalizedFilePath]
 targetToFile is (TargetModule mod) = do
     let fps = [i </> (moduleNameSlashes mod) -<.> ext | ext <- exts, i <- is ]
         exts = ["hs", "hs-boot", "lhs"]
-    mapM (fmap ((, False) . toNormalizedFilePath) . canonicalizePath) fps
+    mapM (fmap (toNormalizedFilePath) . canonicalizePath) fps
 targetToFile _ (TargetFile f _) = do
   f' <- canonicalizePath f
-  return [(toNormalizedFilePath f', True)]
+  return [(toNormalizedFilePath f')]
 
 setNameCache :: IORef NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
+-- This is the key function which implements multi-component support. All
+-- components mapping to the same hie,yaml file are mapped to the same
+-- HscEnv which is updated as new components are discovered.
 loadSession :: FilePath -> Action (FilePath -> Action HscEnvEq)
 loadSession dir = liftIO $ do
     -- Mapping from hie.yaml file to HscEnv, one per hie.yaml file
@@ -240,18 +240,16 @@ loadSession dir = liftIO $ do
         res' <- traverse IO.makeAbsolute res
         return $ normalise <$> res'
 
-    -- Create a new HscEnv from a set of options
+    -- Create a new HscEnv from a hieYaml root and a set of options
+    -- If the hieYaml file already has an HscEnv, the new component is
+    -- combined with the components in the old HscEnv into a new HscEnv
+    -- which contains both.
     packageSetup <- return $ \(hieYaml, opts) -> do
         -- Parse DynFlags for the newly discovered component
         hscEnv <- emptyHscEnv
         (df, targets) <- evalGhcEnv hscEnv $ do
-                          (df, target) <- setOptions opts (hsc_dflags hscEnv)
-                          -- initPackages parses the -package flags and
-                          -- sets up the visibility for each component.
-                          (df', _) <- liftIO $ initPackages df
-                          let df'' = gopt_unset df' Opt_WarnIsError
-                          return (df'' , target)
-        -- Now lookup to see whether we are adding to an exisiting HscEnv
+                          setOptions opts (hsc_dflags hscEnv)
+        -- Now lookup to see whether we are combining with an exisiting HscEnv
         -- or making a new one. The lookup returns the HscEnv and a list of
         -- information about other components loaded into the HscEnv
         -- (unitId, DynFlag, Targets)
@@ -261,13 +259,15 @@ loadSession dir = liftIO $ do
             let oldDeps = Map.lookup hieYaml m
             let -- Add the raw information about this component to the list
                 -- We will modify the unitId and DynFlags used for
-                -- compilation but these are the true source of information
+                -- compilation but these are the true source of
+                -- information.
                 new_deps = (thisInstalledUnitId df, df, targets) : maybe [] snd oldDeps
                 -- Get all the unit-ids for things in this component
                 inplace = map (\(a, _, _) -> a) new_deps
                 -- Remove all inplace dependencies from package flags for
                 -- components in this HscEnv
-                do_one (uid,df, ts) = (uid, removeInplacePackages inplace df, ts)
+                rearrange (uid, (df, uids), ts) = (uid, (df, uids, ts))
+                do_one (uid,df, ts) = rearrange (uid, removeInplacePackages inplace df, ts)
                 -- All deps, but without any packages which are also loaded
                 -- into memory
                 new_deps' = map do_one new_deps
@@ -284,18 +284,22 @@ loadSession dir = liftIO $ do
               evalGhcEnv hscEnv $ do
                 _ <- setSessionDynFlags df
                 getSession
-            -- Now overwrite the other dflags options but with an
-            -- initialised package state to get a proper HscEnv for each
-            -- component
-            let do_one' (uid, (df, uids), ts) = (uid, (df, uids, ts))
-                new_deps'' = map do_one' new_deps'
-
-            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps'', tail new_deps''))
+            -- Modify the map so the hieYaml now maps to the newly created
+            -- HscEnv
+            -- Returns
+            -- * the new HscEnv so it can be used to modify the
+            --   FilePath -> HscEnv map
+            -- * The information for the new component which caused this cache miss
+            -- * The modified information (without -inplace flags) for
+            --   existing packages
+            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps', tail new_deps'))
 
 
     session <- return $ \(hieYaml, opts) -> do
         (hscEnv, new, old_deps) <- packageSetup (hieYaml, opts)
         -- TODO Handle the case where there is no hie.yaml
+        -- Make a map from unit-id to DynFlags, this is used when trying to
+        -- resolve imports.
         let uids = map (\(iuid, (df, _uis, _targets)) -> (iuid, df)) (new : old_deps)
 
         -- For each component, now make a new HscEnvEq which contains the
@@ -333,7 +337,7 @@ loadSession dir = liftIO $ do
         let v = fromMaybe [] mv
         cfp <- liftIO $ canonicalizePath file
         -- We sort so exact matches come first.
-        case find (\((f', exact), _) -> fromNormalizedFilePath f' == cfp || not exact && fromNormalizedFilePath f' `isSuffixOf` cfp) v of
+        case find (\(f', _) -> fromNormalizedFilePath f' == cfp) v of
             Just (_, opts) -> do
                 putStrLn $ "Cached component of " <> show file
                 pure opts
@@ -396,7 +400,11 @@ setOptions (ComponentOptions theOpts _) dflags = do
           setIgnoreInterfacePragmas $
           setLinkerOptions $
           disableOptimisation dflags'
-    return (dflags'', targets)
+    -- initPackages parses the -package flags and
+    -- sets up the visibility for each component.
+    (final_df, _) <- liftIO $ initPackages dflags''
+--    let df'' = gopt_unset df' Opt_WarnIsError
+    return (final_df, targets)
 
 
 -- we don't want to generate object code so we compile to bytecode
