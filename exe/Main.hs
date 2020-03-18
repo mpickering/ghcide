@@ -402,7 +402,7 @@ setOptions (ComponentOptions theOpts _) dflags = do
           setODir cacheDir $
           setDefaultHieDir cacheDir $
           setIgnoreInterfacePragmas $
-          setLinkerOptions $
+          --setLinkerOptions $
           disableOptimisation dflags'
     -- initPackages parses the -package flags and
     -- sets up the visibility for each component.
@@ -414,12 +414,14 @@ setOptions (ComponentOptions theOpts _) dflags = do
 -- we don't want to generate object code so we compile to bytecode
 -- (HscInterpreted) which implies LinkInMemory
 -- HscInterpreted
+{-
 setLinkerOptions :: DynFlags -> DynFlags
 setLinkerOptions df = df {
     ghcLink   = LinkInMemory
   , hscTarget = HscNothing
   , ghcMode = CompManager
   }
+  -}
 
 setIgnoreInterfacePragmas :: DynFlags -> DynFlags
 setIgnoreInterfacePragmas df =
