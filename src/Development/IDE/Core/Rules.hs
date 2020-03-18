@@ -405,6 +405,7 @@ typeCheckRuleDefinition file generateArtifacts = do
   uses_th_qq dflags =
     xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
 
+
 generateCore :: NormalizedFilePath -> Action (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
 generateCore file = do
     deps <- use_ GetDependencies file

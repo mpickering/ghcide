@@ -1,7 +1,6 @@
 -- Copyright (c) 2019 The DAML Authors. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 {-# OPTIONS_GHC -Wno-dodgy-imports #-} -- GHC no longer exports def in GHC 8.6 and above
-{-# OPTIONS_GHC -Wno-orphans #-}
 {-# LANGUAGE CPP #-} -- To get precise GHC version
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -381,12 +380,6 @@ memoIO op = do
                 res <- onceFork $ op k
                 return (Map.insert k res mp, res)
             Just res -> return (mp, res)
-
-instance Show PackageDBFlag where
-  show (PackageDB _) = "pkdb"
-  show (NoUserPackageDB) = "no-user"
-  show (NoGlobalPackageDB) = "no-global"
-  show (ClearPackageDBs)  = "clear"
 
 setOptions :: GhcMonad m => ComponentOptions -> DynFlags -> m (DynFlags, [Target])
 setOptions (ComponentOptions theOpts _) dflags = do
