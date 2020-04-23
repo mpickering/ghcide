@@ -62,6 +62,7 @@ import Data.Either
 import qualified Crypto.Hash.SHA1               as H
 import qualified Data.ByteString.Char8          as B
 import           Data.ByteString.Base16         (encode)
+import Control.Concurrent.Async
 
 import           DynFlags                       (gopt_set, gopt_unset,
                                                  updOptLevel)
@@ -347,7 +348,6 @@ loadSession dir = liftIO $ do
         return res
 
     lock <- newLock
-    cradle_lock <- newLock
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     sessionOpts <- return $ \(hieYaml, file) -> do
@@ -374,17 +374,39 @@ loadSession dir = liftIO $ do
                 finished_barrier <- newBarrier
                 -- fork a new thread here which won't be killed by shake
                 -- throwing an async exception
-                void $ forkIO $ withLock cradle_lock $ do
-                  putStrLn $ "Shelling out to cabal " <> show file
+                void $ forkIO $ do
+                  putStrLn $ "Consulting the cradle for " <> show file
                   cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
                   opts <- cradleToSessionOpts cradle cfp
                   print opts
                   res <- fst <$> session (hieYaml, toNormalizedFilePath' cfp, opts)
                   signalBarrier finished_barrier res
                 waitBarrier finished_barrier
-    return $ \file -> liftIO $ mask_ $ withLock lock $ do
-              hieYaml <- cradleLoc file
-              sessionOpts (hieYaml, file)
+
+    dummyAs <- async $ return (error "Uninitialised")
+    runningCradle <- newIORef dummyAs
+    -- The main function which gets options for a file. We only want one of these running
+    -- at a time.
+    let getOptions file = do
+            hieYaml <- cradleLoc file
+            sessionOpts (hieYaml, file)
+    -- The lock is on the `runningCradle` resource
+    return $ \file -> liftIO $ withLock lock $ do
+        as <- readIORef runningCradle
+        finished <- poll as
+        case finished of
+            Just {} -> do
+                as <- async $ getOptions file
+                writeIORef runningCradle as
+                wait as
+             -- If it's not finished then wait and then get options, this could of course be killed still
+            Nothing -> do
+                _ <- wait as
+                getOptions file
+
+
+
+
 
 checkDependencyInfo :: Map.Map FilePath (Maybe UTCTime) -> IO Bool
 checkDependencyInfo old_di = do
