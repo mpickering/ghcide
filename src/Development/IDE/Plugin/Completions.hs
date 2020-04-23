@@ -26,6 +26,7 @@ import Development.IDE.GHC.Util
 import Development.IDE.LSP.Server
 import System.Time.Extra (showDuration, duration)
 import Data.Text (pack)
+import Control.Exception
 
 #if !MIN_GHC_API_VERSION(8,6,0) || defined(GHC_LIB)
 import Data.Maybe
@@ -79,12 +80,12 @@ getCompletionsLSP lsp ide
                   ,_context=completionContext} = do
     contents <- LSP.getVirtualFileFunc lsp $ toNormalizedUri uri
     fmap Right $ case (contents, uriToFilePath' uri) of
-      (Just cnts, Just path) -> logAndRunRequest ide path $ do
+      (Just cnts, Just path) -> do
         let npath = toNormalizedFilePath' path
-        (ideOpts, compls) <- runAction ide $ do
-            opts <- getIdeOptions
-            compls <- useWithStale ProduceCompletions npath
-            pm <- useWithStale GetParsedModule npath
+        (ideOpts, compls) <- runIdeAction "Completion" (shakeExtras ide) $ do
+            opts <- liftIO $ getIdeOptionsIO $ shakeExtras ide
+            compls <- useWithStaleFast ProduceCompletions npath
+            pm <- useWithStaleFast GetParsedModule npath
             pure (opts, liftA2 (,) compls pm)
         case compls of
           Just ((cci', _), (pm, mapping)) -> do

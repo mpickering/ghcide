@@ -24,14 +24,14 @@ import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
 import qualified Data.Text as T
 import Data.Tuple.Extra
-import Data.Functor
 import Development.Shake
 
 import Development.IDE.Types.Location
 import Development.IDE.Types.Logger
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.Shake
-
+import Development.IDE.Core.RuleTypes
+import Control.Monad
 
 newtype OfInterestVar = OfInterestVar (Var (HashSet NormalizedFilePath))
 instance IsIdeGlobal OfInterestVar
@@ -81,7 +81,8 @@ modifyFilesOfInterest state f = do
     OfInterestVar var <- getIdeGlobalState state
     files <- modifyVar var $ pure . dupe . f
     logDebug (ideLogger state) $ "Set files of interest to: " <> T.pack (show $ HashSet.toList files)
-    void $ shakeRestart state [kick]
+    let das = map (\nfp -> mkDelayedAction "OfInterest" (GetSpanInfo, nfp) Debug (use GetSpanInfo nfp)) (HashSet.toList files)
+    shakeRunInternal state das
 
 -- | Typecheck all the files of interest.
 --   Could be improved

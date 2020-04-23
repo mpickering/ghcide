@@ -127,9 +127,10 @@ main = do
                     , optTesting        = IdeTesting argsTesting
                     , optThreads        = argsThreads
                     }
+                logLevel = if argsVerbose then minBound else Info
             debouncer <- newAsyncDebouncer
-            initialise caps (mainRule >> pluginRules plugins)
-                getLspId event (logger minBound) debouncer options vfs
+            fst <$> (initialise caps (mainRule >> pluginRules plugins)
+                      getLspId event (logger logLevel) debouncer options vfs)
     else do
         -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
         hSetEncoding stdout utf8
@@ -152,17 +153,18 @@ main = do
         putStrLn "\nStep 3/4: Initializing the IDE"
         vfs <- makeVFSHandle
         debouncer <- newAsyncDebouncer
-        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ loadSessionShake dir) vfs
+        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ loadSessionShake dir) vfs
 
         putStrLn "\nStep 4/4: Type checking the files"
         setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
-        results <- runAction ide $ uses TypeCheck (map toNormalizedFilePath' files)
+        results <- runAction "User TypeCheck" ide $ uses TypeCheck (map toNormalizedFilePath' files)
         let (worked, failed) = partition fst $ zip (map isJust results) files
         when (failed /= []) $
             putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
 
         let files xs = let n = length xs in if n == 1 then "1 file" else show n ++ " files"
         putStrLn $ "\nCompleted (" ++ files worked ++ " worked, " ++ files failed ++ " failed)"
+        cancel worker
         return ()
 
 expandFiles :: [FilePath] -> IO [FilePath]

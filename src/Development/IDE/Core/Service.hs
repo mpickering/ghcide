@@ -8,7 +8,7 @@
 --   using the "Shaker" abstraction layer for in-memory use.
 --
 module Development.IDE.Core.Service(
-    getIdeOptions,
+    getIdeOptions, getIdeOptionsIO,
     IdeState, initialise, shutdown,
     runAction,
     writeProfile,
@@ -19,23 +19,23 @@ module Development.IDE.Core.Service(
 
 import Data.Maybe
 import Development.IDE.Types.Options (IdeOptions(..))
-import Control.Monad
 import Development.IDE.Core.Debouncer
 import           Development.IDE.Core.FileStore  (VFSHandle, fileStoreRules)
 import           Development.IDE.Core.FileExists (fileExistsRules)
 import           Development.IDE.Core.OfInterest
-import Development.IDE.Types.Logger
+import Development.IDE.Types.Logger as Logger
 import           Development.Shake
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 
 import           Development.IDE.Core.Shake
+import Control.Concurrent
+import Control.Concurrent.Async
+import Control.Monad
+import GHC.Conc
 
 
-
-newtype GlobalIdeOptions = GlobalIdeOptions IdeOptions
-instance IsIdeGlobal GlobalIdeOptions
 
 ------------------------------------------------------------
 -- Exposed API
@@ -49,9 +49,9 @@ initialise :: LSP.ClientCapabilities
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> VFSHandle
-           -> IO IdeState
-initialise caps mainRule getLspId toDiags logger debouncer options vfs =
-    shakeOpen
+           -> IO (IdeState, Async ())
+initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
+    ide <- shakeOpen
         getLspId
         toDiags
         logger
@@ -68,6 +68,9 @@ initialise caps mainRule getLspId toDiags logger debouncer options vfs =
             ofInterestRules
             fileExistsRules getLspId caps vfs
             mainRule
+    tid <- async $ forever (workerThread ide)
+    labelThread (asyncThreadId tid) "ShakeWorker"
+    return (ide, tid)
 
 writeProfile :: IdeState -> FilePath -> IO ()
 writeProfile = shakeProfile
@@ -79,10 +82,12 @@ shutdown = shakeShut
 -- This will return as soon as the result of the action is
 -- available.  There might still be other rules running at this point,
 -- e.g., the ofInterestRule.
-runAction :: IdeState -> Action a -> IO a
-runAction ide action = join $ shakeEnqueue ide action
+runAction :: String -> IdeState -> Action a -> IO a
+runAction = runActionSync
 
-getIdeOptions :: Action IdeOptions
-getIdeOptions = do
-    GlobalIdeOptions x <- getIdeGlobalAction
-    return x
+-- | `runActionSync` is similar to `runAction` but it will
+-- wait for all rules (so in particular the `ofInterestRule`) to
+-- finish running. This is mainly useful in tests, where you want
+-- to wait for all rules to fire so you can check diagnostics.
+runActionSync :: String -> IdeState -> Action a -> IO a
+runActionSync herald ide act = join $ shakeEnqueue Logger.Info herald ide act
