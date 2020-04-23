@@ -25,7 +25,7 @@ module Development.IDE.Core.Shake(
     shakeOpen, shakeShut,
     shakeRun,
     shakeProfile,
-    use, useWithStale, useNoFile, uses, usesWithStale,
+    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast,
     use_, useNoFile_, uses_,
     define, defineEarlyCutoff, defineOnDisk, needOnDisk, needOnDisks,
     getDiagnostics, unsafeClearDiagnostics,
@@ -471,6 +471,17 @@ use key file = head <$> uses key [file]
 useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
+
+useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
+useWithStaleFast key file =
+  let k = (Q (key, file))
+  in do
+    r <- lookupKeyNoBuild k
+    case r of
+      Nothing -> useWithStale key file
+      Just (A v _) -> lastValue file v
+--    values <- map (\(A value _) -> value) <$> apply (map (Q . (key,)) files)
+--    mapM (uncurry lastValue) (zip files values)
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath

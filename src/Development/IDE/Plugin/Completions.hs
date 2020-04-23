@@ -23,6 +23,7 @@ import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.Shake
 import Development.IDE.GHC.Util
 import Development.IDE.LSP.Server
+import Control.Exception
 
 #if !MIN_GHC_API_VERSION(8,6,0) || defined(GHC_LIB)
 import Data.Maybe
@@ -41,11 +42,11 @@ produceCompletions =
 #if MIN_GHC_API_VERSION(8,6,0) && !defined(GHC_LIB)
         let parsedDeps = []
 #else
-        deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
-        parsedDeps <- mapMaybe (fmap fst) <$> usesWithStale GetParsedModule (transitiveModuleDeps deps)
+        deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStaleFast GetDependencies file
+        parsedDeps <- mapMaybe (fmap fst) <$> usesWithStaleFast GetParsedModule (transitiveModuleDeps deps)
 #endif
-        tm <- fmap fst <$> useWithStale TypeCheck file
-        packageState <- fmap (hscEnv . fst) <$> useWithStale GhcSession file
+        tm <- fmap fst <$> useWithStaleFast TypeCheck file
+        packageState <- fmap (hscEnv . fst) <$> useWithStaleFast GhcSession file
         case (tm, packageState) of
             (Just tm', Just packageState') -> do
                 cdata <- liftIO $ cacheDataProducer packageState'
@@ -73,29 +74,33 @@ getCompletionsLSP
 getCompletionsLSP lsp ide
   CompletionParams{_textDocument=TextDocumentIdentifier uri
                   ,_position=position
-                  ,_context=completionContext} = do
-    contents <- LSP.getVirtualFileFunc lsp $ toNormalizedUri uri
-    fmap Right $ case (contents, uriToFilePath' uri) of
-      (Just cnts, Just path) -> do
-        let npath = toNormalizedFilePath' path
-        (ideOpts, compls) <- runAction ide $ do
-            opts <- getIdeOptions
-            compls <- useWithStale ProduceCompletions npath
-            pm <- useWithStale GetParsedModule npath
-            pure (opts, liftA2 (,) compls pm)
-        case compls of
-          Just ((cci', _), (pm, mapping)) -> do
-            let !position' = fromCurrentPosition mapping position
-            pfix <- maybe (return Nothing) (flip VFS.getCompletionPrefix cnts) position'
-            case (pfix, completionContext) of
-              (Just (VFS.PosPrefixInfo _ "" _ _), Just CompletionContext { _triggerCharacter = Just "."})
-                -> return (Completions $ List [])
-              (Just pfix', _) -> do
-                let fakeClientCapabilities = ClientCapabilities Nothing Nothing Nothing Nothing
-                Completions . List <$> getCompletions ideOpts cci' pm pfix' fakeClientCapabilities (WithSnippets True)
-              _ -> return (Completions $ List [])
-          _ -> return (Completions $ List [])
-      _ -> return (Completions $ List [])
+                  ,_context=completionContext} =
+    -- We mask here as otherwise completions interact badly with
+    -- modification events which cause the thread to get continually
+    -- killed before the action can finish.
+    mask_ $ do
+      contents <- LSP.getVirtualFileFunc lsp $ toNormalizedUri uri
+      fmap Right $ case (contents, uriToFilePath' uri) of
+        (Just cnts, Just path) -> do
+          let npath = toNormalizedFilePath' path
+          (ideOpts, compls) <- runAction ide $ do
+              opts <- getIdeOptions
+              compls <- useWithStaleFast ProduceCompletions npath
+              pm <- useWithStaleFast GetParsedModule npath
+              pure (opts, liftA2 (,) compls pm)
+          case compls of
+            Just ((cci', _), (pm, mapping)) -> do
+              let !position' = fromCurrentPosition mapping position
+              pfix <- maybe (return Nothing) (flip VFS.getCompletionPrefix cnts) position'
+              case (pfix, completionContext) of
+                (Just (VFS.PosPrefixInfo _ "" _ _), Just CompletionContext { _triggerCharacter = Just "."})
+                  -> return (Completions $ List [])
+                (Just pfix', _) -> do
+                  let fakeClientCapabilities = ClientCapabilities Nothing Nothing Nothing Nothing
+                  Completions . List <$> getCompletions ideOpts cci' pm pfix' fakeClientCapabilities (WithSnippets True)
+                _ -> return (Completions $ List [])
+            _ -> return (Completions $ List [])
+        _ -> return (Completions $ List [])
 
 setHandlersCompletion :: PartialHandlers c
 setHandlersCompletion = PartialHandlers $ \WithMessage{..} x -> return x{
