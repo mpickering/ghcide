@@ -64,6 +64,7 @@ import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Spans.Type
 import qualified Data.ByteString.Char8 as BS
+import Development.IDE.Core.PositionMapping
 
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
@@ -86,11 +87,11 @@ toIdeResult = either (, Nothing) (([],) . Just)
 
 -- | useE is useful to implement functions that aren’t rules but need shortcircuiting
 -- e.g. getDefinition.
-useE :: IdeRule k v => k -> NormalizedFilePath -> MaybeT Action v
-useE k = MaybeT . use k
+useE :: IdeRule k v => IdeState -> k -> NormalizedFilePath -> MaybeT IO (v, PositionMapping)
+useE ide k = MaybeT . useWithStaleFast ide k
 
-useNoFileE :: IdeRule k v => k -> MaybeT Action v
-useNoFileE k = useE k emptyFilePath
+useNoFileE :: IdeRule k v => IdeState -> k -> MaybeT IO v
+useNoFileE ide k = fst <$> useE ide k emptyFilePath
 
 usesE :: IdeRule k v => k -> [NormalizedFilePath] -> MaybeT Action [v]
 usesE k = MaybeT . fmap sequence . uses k
@@ -110,31 +111,33 @@ getDependencies :: NormalizedFilePath -> Action (Maybe [NormalizedFilePath])
 getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 
 -- | Try to get hover text for the name under point.
-getAtPoint :: NormalizedFilePath -> Position -> Action (Maybe (Maybe Range, [T.Text]))
-getAtPoint file pos = fmap join $ runMaybeT $ do
-  opts <- lift getIdeOptions
-  spans <- useE GetSpanInfo file
-  return $ AtPoint.atPoint opts spans pos
+getAtPoint :: IdeState -> NormalizedFilePath -> Position -> IO (Maybe (Maybe Range, [T.Text]))
+getAtPoint ide file pos = fmap join $ runMaybeT $ do
+  opts <- lift $ getIdeOptionsIO ide
+  (spans, mapping) <- useE ide GetSpanInfo file
+  !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
+  return $ AtPoint.atPoint opts spans pos'
 
 -- | Goto Definition.
-getDefinition :: NormalizedFilePath -> Position -> Action (Maybe Location)
-getDefinition file pos = fmap join $ runMaybeT $ do
-    opts <- lift getIdeOptions
-    spans <- useE GetSpanInfo file
-    lift $ AtPoint.gotoDefinition (getHieFile file) opts (spansExprs spans) pos
+getDefinition :: IdeState -> NormalizedFilePath -> Position -> IO (Maybe Location)
+getDefinition ide file pos = fmap join $ runMaybeT $ do
+    opts <- lift $ getIdeOptionsIO ide
+    spans <- fst <$> useE ide GetSpanInfo file
+    lift $ AtPoint.gotoDefinition (getHieFile ide file) opts (spansExprs spans) pos
 
-getTypeDefinition :: NormalizedFilePath -> Position -> Action (Maybe Location)
-getTypeDefinition file pos = fmap join $ runMaybeT $ do
-    opts <- lift getIdeOptions
-    spans <- useE GetSpanInfo file
-    lift $ AtPoint.gotoTypeDefinition (getHieFile file) opts (spansExprs spans) pos
+getTypeDefinition :: IdeState -> NormalizedFilePath -> Position -> IO (Maybe Location)
+getTypeDefinition ide file pos = fmap join $ runMaybeT $ do
+    opts <- lift $ getIdeOptionsIO ide
+    spans <- fst <$> useE ide GetSpanInfo file
+    lift $ AtPoint.gotoTypeDefinition (getHieFile ide file) opts (spansExprs spans) pos
 
 
 getHieFile
-  :: NormalizedFilePath -- ^ file we're editing
+  :: IdeState
+  -> NormalizedFilePath -- ^ file we're editing
   -> Module -- ^ module dep we want info for
-  -> Action (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
-getHieFile file mod = do
+  -> IO (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
+getHieFile ide file mod = runAction ide $ do
   TransitiveDependencies {transitiveNamedModuleDeps} <- use_ GetDependencies file
   case find (\x -> nmdModuleName x == moduleName mod) transitiveNamedModuleDeps of
     Just NamedModuleDep{nmdFilePath=nfp} -> do

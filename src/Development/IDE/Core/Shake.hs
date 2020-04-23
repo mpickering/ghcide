@@ -25,7 +25,7 @@ module Development.IDE.Core.Shake(
     shakeOpen, shakeShut,
     shakeRun,
     shakeProfile,
-    use, useWithStale, useNoFile, uses, usesWithStale,
+    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast,
     use_, useNoFile_, uses_,
     define, defineEarlyCutoff, defineOnDisk, needOnDisk, needOnDisks,
     getDiagnostics, unsafeClearDiagnostics,
@@ -38,7 +38,7 @@ module Development.IDE.Core.Shake(
     actionLogger,
     FileVersion(..), modificationTime,
     Priority(..),
-    updatePositionMapping,
+    updatePositionMapping, runAction, runActionSync,
     deleteValue,
     OnDiskRule(..),
     ) where
@@ -83,6 +83,7 @@ import           GHC.Generics
 import           System.IO.Unsafe
 import           Numeric.Extra
 import Language.Haskell.LSP.Types
+import Data.Either.Extra
 
 
 -- information we stash inside the shakeExtra field
@@ -471,6 +472,46 @@ use key file = head <$> uses key [file]
 useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
+
+useWithStaleFast :: IdeRule k v => IdeState -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
+useWithStaleFast ide key file = do
+  final_res <- runAction ide $ do
+    -- This lookup directly looks up the key in the shake database and
+    -- returns the last value that was computed for this key without
+    -- checking freshness.
+    let ShakeExtras{state} = shakeExtras ide
+    r <- liftIO $ getValues state key file
+    case r of
+      -- The value has never been computed so build the rule
+      Nothing -> useWithStale key file
+      -- Otherwise, use the computed value even if it's out of date.
+      Just v -> lastValue file v
+  -- Then async trigger the key to be built anyway because we want to
+  -- keep updating the value in the key.
+  void $ shakeRun ide [use key file]
+  return final_res
+
+-- This will return as soon as the result of the action is
+-- available.  There might still be other rules running at this point,
+-- e.g., the ofInterestRule.
+runAction :: IdeState -> Action a -> IO a
+runAction ide action = do
+    bar <- newBarrier
+    res <- shakeRun ide [do v <- action; liftIO $ signalBarrier bar v; return v]
+    -- shakeRun might throw an exception (either through action or a default rule),
+    -- in which case action may not complete successfully, and signalBarrier might not be called.
+    -- Therefore we wait for either res (which propagates the exception) or the barrier.
+    -- Importantly, if the barrier does finish, cancelling res only kills waiting for the result,
+    -- it doesn't kill the actual work
+    fmap fromEither $ race (head <$> res) $ waitBarrier bar
+
+
+-- | `runActionSync` is similar to `runAction` but it will
+-- wait for all rules (so in particular the `ofInterestRule`) to
+-- finish running. This is mainly useful in tests, where you want
+-- to wait for all rules to fire so you can check diagnostics.
+runActionSync :: IdeState -> Action a -> IO a
+runActionSync s act = fmap head $ join $ shakeRun s [act]
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath
