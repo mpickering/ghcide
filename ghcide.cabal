@@ -176,6 +176,7 @@ executable ghcide
     main-is: Main.hs
     build-depends:
         time,
+        async,
         hslogger,
         aeson,
         base == 4.*,
