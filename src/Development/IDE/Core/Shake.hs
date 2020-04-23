@@ -4,6 +4,8 @@
 {-# LANGUAGE ExistentialQuantification  #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE PatternSynonyms            #-}
+{-# LANGUAGE ExplicitNamespaces         #-}
 
 -- | A Shake implementation of the compiler service.
 --
@@ -23,9 +25,10 @@ module Development.IDE.Core.Shake(
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
     IdeRule, IdeResult, GetModificationTime(..),
     shakeOpen, shakeShut,
-    shakeRun,
+    shakeRun, shakeRunInternal, shakeRunInternalKill, shakeRunUser,
     shakeProfile,
-    use, useWithStale, useNoFile, uses, usesWithStale,
+    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast, useWithStaleFast', delayedAction,
+    FastResult(..),
     use_, useNoFile_, uses_,
     define, defineEarlyCutoff, defineOnDisk, needOnDisk, needOnDisks,
     getDiagnostics, unsafeClearDiagnostics,
@@ -38,12 +41,15 @@ module Development.IDE.Core.Shake(
     actionLogger,
     FileVersion(..), modificationTime,
     Priority(..),
-    updatePositionMapping,
+    updatePositionMapping, runAction, runActionSync,
     deleteValue,
     OnDiskRule(..),
+
+    workerThread, delay, DelayedAction, mkDelayedAction,
+    IdeAction(..), runIdeAction
     ) where
 
-import           Development.Shake hiding (ShakeValue, doesFileExist)
+import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
 import           Development.Shake.Database
 import           Development.Shake.Classes
 import           Development.Shake.Rule
@@ -62,6 +68,7 @@ import Data.Unique
 import Development.IDE.Core.Debouncer
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Types.Logger hiding (Priority)
+import qualified Development.IDE.Types.Logger as Logger
 import Language.Haskell.LSP.Diagnostics
 import qualified Data.SortedList as SL
 import           Development.IDE.Types.Diagnostics
@@ -83,6 +90,12 @@ import           GHC.Generics
 import           System.IO.Unsafe
 import           Numeric.Extra
 import Language.Haskell.LSP.Types
+import Data.Either.Extra
+import Control.Monad.IO.Class
+import Control.Monad.Reader
+import Control.Monad.Writer
+import qualified Data.HashPSQ as PQ
+import Debug.Trace
 
 
 -- information we stash inside the shakeExtra field
@@ -104,6 +117,7 @@ data ShakeExtras = ShakeExtras
     -- accumlation of all previous mappings.
     ,inProgress :: Var (HMap.HashMap NormalizedFilePath Int)
     -- ^ How many rules are running for each file
+    , queue :: ShakeQueue
     }
 
 getShakeExtras :: Action ShakeExtras
@@ -184,14 +198,20 @@ currentValue Failed = Nothing
 
 -- | Return the most recent, potentially stale, value and a PositionMapping
 -- for the version of that value.
-lastValue :: NormalizedFilePath -> Value v -> Action (Maybe (v, PositionMapping))
-lastValue file v = do
-    ShakeExtras{positionMapping} <- getShakeExtras
+lastValueIO :: ShakeExtras -> NormalizedFilePath -> Value v -> IO (Maybe (v, PositionMapping))
+lastValueIO ShakeExtras{positionMapping} file v = do
     allMappings <- liftIO $ readVar positionMapping
     pure $ case v of
         Succeeded ver v -> Just (v, mappingForVersion allMappings file ver)
         Stale ver v -> Just (v, mappingForVersion allMappings file ver)
         Failed -> Nothing
+
+-- | Return the most recent, potentially stale, value and a PositionMapping
+-- for the version of that value.
+lastValue :: NormalizedFilePath -> Value v -> Action (Maybe (v, PositionMapping))
+lastValue file v = do
+    s <- getShakeExtras
+    liftIO $ lastValueIO s file v
 
 valueVersion :: Value v -> Maybe TextDocumentVersion
 valueVersion = \case
@@ -223,15 +243,197 @@ data IdeState = IdeState
     {shakeDb :: ShakeDatabase
     ,shakeAbort :: MVar (IO ()) -- close whoever was running last
     ,shakeClose :: IO ()
+    ,shakeQueue :: ShakeQueue
     ,shakeExtras :: ShakeExtras
     ,shakeProfileDir :: Maybe FilePath
     }
 
 
+data QPriority = QPriority { retries :: Int
+                           , qid :: Int
+                           , qimportant :: Bool } deriving Eq
+
+instance Ord QPriority where
+    compare (QPriority r q i) (QPriority r' q' i') = compare i i' <> compare r r' <> compare q q'
+
+
+data KeyWithId = KeyWithId Key Int deriving (Eq)
+
+instance Hashable KeyWithId where
+  hashWithSalt salt (KeyWithId k _) = hashWithSalt salt k
+
+instance Ord KeyWithId where
+    compare (KeyWithId h1 i1) (KeyWithId h2 i2) = i1 `compare` i2
+
+
+type PriorityMap =  PQ.HashPSQ KeyWithId QPriority DelayedActionInternal
+
+-- | Actions we want to run on the shake database are queued up and batched together.
+-- A batch can be killed when a file is modified as we assume it will invalidate it.
+data ShakeQueue = ShakeQueue
+                { qactions :: Var PriorityMap
+                -- An action which cancels the currently running batch and
+                -- requeues the participants.
+                , qabort :: Var (IO () -> IO ())
+                -- A monotonically increasing integer to give each request
+                -- a unique identifier.
+                , qcount :: Var Int
+                -- The worker takes this MVar when the actions are empty, it is filled
+                -- when an action is written to the map which allows the
+                -- worker to continue.
+                , qTrigger :: MVar ()
+                }
+
+-- This is stuff we make up and add onto the information the user
+-- provided.
+data DelayedActionExtra = DelayedActionExtra { actionInternalId :: Int
+                                             , actionInternalQPriority :: QPriority
+                                             , actionInternalFinished :: IO Bool
+                                             , actionInternal :: Action ()
+                                             }
+
+type DelayedAction a = DelayedActionX (Action a)
+type DelayedActionInternal = DelayedActionX DelayedActionExtra
+
+{-# COMPLETE DelayedActionInternal#-}
+pattern DelayedActionInternal :: String -> Key -> Logger.Priority -> Action () -> Int -> QPriority -> IO Bool -> DelayedActionX DelayedActionExtra
+pattern DelayedActionInternal {actionInternalName, actionInternalKey, actionInternalPriority, getAction
+                              , actionId, actionQPriority, actionFinished}
+                              = DelayedActionX actionInternalName actionInternalKey actionInternalPriority
+                                    (DelayedActionExtra actionId actionQPriority actionFinished getAction)
+
+{-# COMPLETE DelayedAction#-}
+pattern DelayedAction :: String -> Key -> Logger.Priority -> Action a -> DelayedAction a
+pattern DelayedAction a b c d = DelayedActionX a b c d
+
+mkDelayedAction :: (Show k, Typeable k, Hashable k, Eq k)
+                => String -> k -> Logger.Priority -> Action a -> DelayedAction a
+mkDelayedAction s k = DelayedAction s (Key k)
+
+data DelayedActionX a = DelayedActionX { actionName :: String -- Name we show to the user
+                                      , actionKey :: Key
+                                      -- The queue only contrains entries for
+                                      -- unique key values.
+                                      , actionPriority :: Logger.Priority
+                                      -- An action which can be called to see
+                                      -- if the action has finished yet.
+                                      , actionExtra :: a
+                                      }
+
+instance Show (DelayedActionX a) where
+    show d = "DelayedAction: " ++ actionName d
+
+finishedBarrier :: Barrier a -> IO Bool
+finishedBarrier b = isJust <$> waitBarrierMaybe b
+
+freshId :: ShakeQueue -> IO Int
+freshId (ShakeQueue{qcount}) = do
+    modifyVar qcount (\n -> return (n + 1, n))
+
+-- Could replace this argument with a parameterised version of
+-- DelayedAction.
+queueAction :: [DelayedAction a]
+               -> ShakeQueue
+               -> IO [Barrier a]
+queueAction as sq = do
+    (bs, ds) <- unzip <$> mapM (instantiateDelayedAction sq) as
+    modifyVar_ (qactions sq) (return . insertMany ds)
+    -- Wake up the worker if necessary
+    void $ tryPutMVar (qTrigger sq) ()
+    return bs
+
+insertMany :: [DelayedActionInternal] -> PriorityMap -> PriorityMap
+insertMany ds pm = foldr (\d pm' -> PQ.insert (mkKid d) (getPriority d) d pm') pm ds
+
+
+mkKid :: DelayedActionX DelayedActionExtra -> KeyWithId
+mkKid d = KeyWithId (actionKey d) (actionId d)
+
+queueDelayedAction :: DelayedActionInternal -> ShakeQueue -> IO ()
+queueDelayedAction d sq = do
+    modifyVar_ (qactions sq) (return . PQ.insert (mkKid d) (getPriority d) d)
+    -- Wake up the worker if necessary
+    void $ tryPutMVar (qTrigger sq) ()
+
+getPriority :: DelayedActionInternal -> QPriority
+getPriority = actionQPriority
+
+instantiateDelayedAction :: ShakeQueue -> DelayedAction a -> IO (Barrier a, DelayedActionInternal)
+instantiateDelayedAction sq (DelayedAction s k p a) = do
+    b <- newBarrier
+    i <- freshId sq
+    let a' = do r <- a
+                liftIO $ signalBarrier b r
+    let d = DelayedActionInternal s k p a' i (QPriority 0 i False) (finishedBarrier b)
+    return (b, d)
+
+
+newShakeQueue :: IO ShakeQueue
+newShakeQueue = do
+    ShakeQueue <$> newVar (PQ.empty) <*> (newVar id) <*> newVar 0 <*> newEmptyMVar
+
+requeueIfCancelled :: ShakeQueue -> DelayedActionInternal -> IO ()
+requeueIfCancelled sq d@(DelayedActionInternal{..}) = do
+    is_finished <- actionFinished
+    unless is_finished (queueDelayedAction d sq)
+
+logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
+logDelayedAction l d  = do
+    start <- liftIO $ offsetTime
+    getAction d
+    runTime <- liftIO $ start
+    return ()
+    liftIO $ logPriority l (actionPriority d) $ T.pack $
+        "finish: " ++ (actionName d) ++ " (took " ++ showDuration runTime ++ ")"
+
+-- | Retrieve up to k values from the map and return the modified map
+smallestK :: Int -> PriorityMap -> (PriorityMap, [DelayedActionInternal])
+smallestK 0 p = (p, [])
+smallestK n p = case PQ.minView p of
+                    Nothing -> (p, [])
+                    Just (_, _, v, p') ->
+                        let (p'', ds) = smallestK (n - 1) p'
+                        in (p'', v:ds)
+
+type QueueInfo = (Int, Int)
+
+getWork :: Int -> PriorityMap -> (PriorityMap, (QueueInfo, [DelayedActionInternal]))
+getWork n p =
+    let before_size = PQ.size p
+        (p', as) = smallestK n p
+        after_size = PQ.size p'
+    in (p', ((before_size, after_size), as))
+
+-- | A thread which continually reads from the queue running shake actions
+workerThread :: IdeState -> IO ()
+workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
+    -- I choose 20 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
+    (info, ds) <- modifyVar qactions (return . getWork 500)
+    case ds of
+        -- Nothing to do, wait until some work is available.
+        [] -> takeMVar qTrigger
+        _ -> do
+            logDebug (logger shakeExtras) (T.pack $ "Starting: " ++ show info ++ ":" ++ show ds)
+            (cancel, wait) <- shakeRun Debug "batch" i (map (logDelayedAction (logger shakeExtras)) ds)
+            writeVar qabort (\k -> do
+                k
+                cancel
+                mapM_ (requeueIfCancelled sq) ds)
+            res <- try wait
+            case res of
+                -- Really don't want an exception to kill this thread but not sure where it should go
+                Left (e :: SomeException) -> return ()
+                Right r -> return ()
+            -- Action finished, nothing to abort now
+            writeVar qabort id
+            return ()
+
+
+
 -- This is debugging code that generates a series of profiles, if the Boolean is true
-shakeRunDatabaseProfile :: Maybe FilePath -> ShakeDatabase -> [Action a] -> IO ([a], Maybe FilePath)
+shakeRunDatabaseProfile :: Maybe FilePath -> ShakeDatabase -> [Action a] -> IO (([a], [IO ()]), Maybe FilePath)
 shakeRunDatabaseProfile mbProfileDir shakeDb acts = do
-        (time, (res,_)) <- duration $ shakeRunDatabase shakeDb acts
+        (time, res) <- duration $ shakeRunDatabase shakeDb acts
         proFile <- for mbProfileDir $ \dir -> do
                 count <- modifyVar profileCounter $ \x -> let !y = x+1 in return (y,y)
                 let file = "ide-" ++ profileStartTime ++ "-" ++ takeEnd 5 ("0000" ++ show count) ++ "-" ++ showDP 2 time <.> "html"
@@ -255,6 +457,8 @@ setValues :: IdeRule k v
           -> IO ()
 setValues state key file val = modifyVar_ state $ \vals -> do
     -- Force to make sure the old HashMap is not retained
+    --let size = HMap.size vals
+    --traceEventIO ("METRIC:" ++ show size)
     evaluate $ HMap.insert (file, Key key) (fmap toDyn val) vals
 
 -- | Delete the value stored for a given ide build key
@@ -301,6 +505,8 @@ shakeOpen :: IO LSP.LspId
           -> IO IdeState
 shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) opts rules = do
     inProgress <- newVar HMap.empty
+    shakeAbort <- newMVar $ return ()
+    shakeQueue <- newShakeQueue
     shakeExtras <- do
         globals <- newVar HMap.empty
         state <- newVar HMap.empty
@@ -308,6 +514,7 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
         hiddenDiagnostics <- newVar mempty
         publishedDiagnostics <- newVar mempty
         positionMapping <- newVar HMap.empty
+        let queue = shakeQueue
         pure ShakeExtras{..}
     (shakeDb, shakeClose) <-
         shakeOpenDatabase
@@ -318,7 +525,6 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
                 , shakeProgress = const $ if reportProgress then lspShakeProgress getLspId eventer inProgress else pure ()
                 }
             rules
-    shakeAbort <- newMVar $ return ()
     shakeDb <- shakeDb
     return IdeState{..}
 
@@ -390,22 +596,73 @@ withMVar' var unmasked masked = mask $ \restore -> do
     putMVar var a'
     pure c
 
+-- | These actions are run asynchronously after the current action is
+-- finished running. For example, to trigger a key build after a rule
+-- has already finished as is the case with useWithStaleFast
+delayedAction :: DelayedAction () -> IdeAction ()
+delayedAction a = do
+  sq <- shakeQueue <$> ask
+  void $ liftIO $ queueAction [a] sq
+
+-- | A varient of delayedAction for the Action monad
+-- The supplied action *will* be run but at least not until the current action has finished.
+delay :: (Typeable k, Show k, Hashable k, Eq k)
+      => String -> k -> Action () -> Action ()
+delay herald k a = do
+    ShakeExtras{queue} <- getShakeExtras
+    let da = mkDelayedAction herald (Key k) Info a
+    -- Do not wait for the action to return
+    void $ liftIO $ queueAction [da] queue
+
+--  runAfterDB (\db -> do
+--    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
+
+-- | Running an action which DIRECTLY corresponds to something a user did,
+-- for example computing hover information.
+shakeRunUser :: IdeState -> [DelayedAction a] -> IO ([IO a])
+shakeRunUser ide as = do
+    bs <- queueAction as (shakeQueue ide)
+    return $ map waitBarrier bs
+-- | Running an action which is INTERNAL to shake, for example, a file has
+-- been modified, basically any use of shakeRun which is not blocking (ie
+-- which is not called via runAction).
+shakeRunInternal :: IdeState -> [DelayedAction a] -> IO ()
+shakeRunInternal ide as = void $ queueAction as (shakeQueue ide)
+
+-- | Like shakeRun internal but kill ongoing work first
+shakeRunInternalKill :: IdeState -> [DelayedAction a] -> IO ()
+shakeRunInternalKill ide as = do
+    -- TODO: There is a race here if the actions get queued
+    -- and start to run before the kill, sh
+    let k = shakeRunInternal ide as
+    kill <- readVar (qabort (shakeQueue ide))
+    kill k
+
+
 -- | Spawn immediately. If you are already inside a call to shakeRun that will be aborted with an exception.
-shakeRun :: IdeState -> [Action a] -> IO (IO [a])
-shakeRun IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
+shakeRun :: Logger.Priority
+         -> String  -- A name for the action and at which logging priority it should be displayed.
+                                -- Some requests are very internal to shake
+                                -- and don't make much sense to normal
+                                -- users.
+         -> IdeState -> [Action a] -> IO (IO (), IO [a])
+shakeRun p herald IdeState{shakeExtras=ShakeExtras{..},..} acts  =
+    {-
     withMVar'
-        shakeAbort
+        abort
         (\stop -> do
               (stopTime,_) <- duration stop
-              logDebug logger $ T.pack $ "Starting shakeRun (aborting the previous one took " ++ showDuration stopTime ++ ")"
+              return ()
+              logPriority logger p $ T.pack $ "start shakeRun: " ++ herald ++ " (abort time:" ++ showDuration stopTime ++ ")"
         )
         -- It is crucial to be masked here, otherwise we can get killed
         -- between spawning the new thread and updating shakeAbort.
         -- See https://github.com/digital-asset/ghcide/issues/79
+        -}
         (do
               start <- offsetTime
               aThread <- asyncWithUnmask $ \restore -> do
-                   res <- try (restore $ shakeRunDatabaseProfile shakeProfileDir shakeDb acts)
+                   res <- try (restore $ shakeRunDatabaseProfile profileDir shakeDb acts)
                    runTime <- start
                    let res' = case res of
                             Left e -> "exception: " <> displayException e
@@ -416,15 +673,19 @@ shakeRun IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
                                                 NormalizedUri _ x -> x
                                 in ", profile saved at " <> T.unpack link
                             _ -> ""
-                   let logMsg = logDebug logger $ T.pack $
-                        "Finishing shakeRun (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
+                   let logMsg = logPriority logger p $ T.pack $
+                        "finish shakeRun: " ++ herald ++ " (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
                    return (fst <$> res, logMsg)
               let wrapUp (res, _) = do
                     either (throwIO @SomeException) return res
               _ <- async $ do
                   (_, logMsg) <- wait aThread
                   logMsg
-              pure (cancel aThread, wrapUp =<< wait aThread))
+              let k = do
+                        (res, as) <- (wrapUp =<< wait aThread)
+                        sequence_ as
+                        return res
+              pure (cancel aThread, k))
 
 getDiagnostics :: IdeState -> IO [FileDiagnostic]
 getDiagnostics IdeState{shakeExtras = ShakeExtras{diagnostics}} = do
@@ -469,6 +730,76 @@ use key file = head <$> uses key [file]
 useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
+
+newtype IdeAction a = IdeAction { runIdeActionT  :: (ReaderT IdeState IO) a }
+    deriving (MonadReader IdeState, MonadIO, Functor, Applicative, Monad)
+
+runIdeAction :: String -> IdeState -> IdeAction a -> IO a
+runIdeAction _herald s i = do
+    res <- runReaderT (runIdeActionT i) s
+    return res
+
+askShake :: IdeAction ShakeExtras
+askShake = shakeExtras <$> ask
+
+-- A (maybe) stale result now, and an up to date one later
+data FastResult a = FastResult { stale :: Maybe (a,PositionMapping), uptoDate :: Barrier (Maybe a)  }
+
+useWithStaleFast' :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (FastResult v)
+useWithStaleFast' key file = do
+  final_res <-  do
+    -- This lookup directly looks up the key in the shake database and
+    -- returns the last value that was computed for this key without
+    -- checking freshness.
+
+    s@ShakeExtras{state} <- askShake
+    r <- liftIO $ getValues state key file
+    case r of
+      Nothing -> do
+        -- Perhaps for Hover this should return Nothing immediatey but for
+        -- completions it should block? Not for MP to decide, need AZ and
+        -- F to comment
+        return Nothing
+        --useWithStale key file
+      -- Otherwise, use the computed value even if it's out of date.
+      Just v -> do
+        liftIO $ lastValueIO s file v
+  -- Then async trigger the key to be built anyway because we want to
+  -- keep updating the value in the key.
+  --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
+  b <- liftIO $ newBarrier
+  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (use key file >>= liftIO . signalBarrier b))
+  return (FastResult final_res b)
+
+useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
+useWithStaleFast key file = stale <$> useWithStaleFast' key file
+
+-- MattP: Removed the distinction between runAction and runActionSync
+-- as it is no longer necessary now the are no `action` rules. This is how
+-- it should remain as they add a lot of overhead for hover for example if
+-- you run them every time.
+-- There is only one use of runAction left in the whole code base (apart from exe/Main.hs)
+-- In CodeAction where we probably want to remove it.
+runAction :: String -> IdeState -> Action a -> IO a
+runAction herald ide action = do
+    bar <- newBarrier
+    res <- shakeRunUser herald ide [do v <- action; liftIO $ signalBarrier bar v; return v]
+    -- shakeRun might throw an exception (either through action or a default rule),
+    -- in which case action may not complete successfully, and signalBarrier might not be called.
+    -- Therefore we wait for either res (which propagates the exception) or the barrier.
+    -- Importantly, if the barrier does finish, cancelling res only kills waiting for the result,
+    -- it doesn't kill the actual work
+    a1 <- async (head res)
+    a2 <- async (waitBarrier bar)
+    fromEither <$> waitEither a1 a2
+
+
+-- | `runActionSync` is similar to `runAction` but it will
+-- wait for all rules (so in particular the `ofInterestRule`) to
+-- finish running. This is mainly useful in tests, where you want
+-- to wait for all rules to fire so you can check diagnostics.
+runActionSync :: String -> IdeState -> Action a -> IO a
+runActionSync herald s act = fmap head $ join $ sequence <$> shakeRunUser s [mkDelayedAction herald herald Info act]
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath
@@ -692,12 +1023,12 @@ decodeShakeValue bs = case BS.uncons bs of
       | otherwise -> error $ "Failed to parse shake value " <> show bs
 
 
-updateFileDiagnostics ::
-     NormalizedFilePath
+updateFileDiagnostics :: MonadIO m
+  => NormalizedFilePath
   -> Key
   -> ShakeExtras
   -> [(ShowDiagnostic,Diagnostic)] -- ^ current results
-  -> Action ()
+  -> m ()
 updateFileDiagnostics fp k ShakeExtras{diagnostics, hiddenDiagnostics, publishedDiagnostics, state, debouncer, eventer} current = liftIO $ do
     modTime <- (currentValue =<<) <$> getValues state GetModificationTime fp
     let (currentShown, currentHidden) = partition ((== ShowDiag) . fst) current

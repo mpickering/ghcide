@@ -63,7 +63,8 @@ library
         transformers,
         unordered-containers >= 0.2.10.0,
         utf8-string,
-        hslogger
+        hslogger,
+        psqueues
     if flag(ghc-lib)
       build-depends:
         ghc-lib >= 8.8,
