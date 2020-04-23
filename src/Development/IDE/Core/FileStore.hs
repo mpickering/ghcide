@@ -30,6 +30,7 @@ import System.IO.Error
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
+import Development.IDE.Core.RuleTypes
 import qualified Data.Rope.UTF16 as Rope
 
 #ifdef mingw32_HOST_OS
@@ -174,7 +175,16 @@ setBufferModified state absFile contents = do
     VFSHandle{..} <- getIdeGlobalState state
     whenJust setVirtualFileContents $ \set ->
         set (filePathToUri' absFile) contents
-    void $ shakeRun state []
+    shakeRunInternalKill "FileStoreBuffer" state []
+
+-- | Note that some buffer for a specific file has been modified but not
+-- with what changes.
+setFileModified :: IdeState -> NormalizedFilePath -> IO ()
+setFileModified state nfp = do
+    VFSHandle{..} <- getIdeGlobalState state
+    when (isJust setVirtualFileContents) $
+        fail "setSomethingModified can't be called on this type of VFSHandle"
+    shakeRunInternalKill "FileStoreTC" state [void (use TypeCheck nfp)] --, void (useNoFile GetModuleGraph)]
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that
@@ -184,4 +194,4 @@ setSomethingModified state = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    void $ shakeRun state []
+    shakeRunInternalKill "FileStoreSomething" state []

@@ -72,6 +72,7 @@ import HscTypes (HscEnv(..), ic_dflags)
 import DynFlags (PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
 import           GHC.Check                      (runTimeVersion, compileTimeVersionFromLibdir)
+import Debug.Trace
 
 import           HIE.Bios.Cradle
 import           HIE.Bios.Types
@@ -86,7 +87,7 @@ import Utils
 ghcideVersion :: IO String
 ghcideVersion = do
   path <- getExecutablePath
-  let gitHashSection = case $(gitHash) of
+  let gitHashSection = case "" of
         x | x == "UNKNOWN" -> ""
         x -> " (GIT hash: " <> x <> ")"
   return $ "ghcide version: " <> showVersion version
@@ -113,7 +114,7 @@ main = do
     dir <- IO.getCurrentDirectory
     command <- makeLspCommandId "typesignature.add"
 
-    let plugins = Completions.plugin <> CodeAction.plugin
+    let plugins = Completions.plugin -- <> CodeAction.plugin
         onInitialConfiguration = const $ Right ()
         onConfigurationChange  = const $ Right ()
         options = def { LSP.executeCommandCommands = Just [command]
@@ -134,9 +135,10 @@ main = do
                     , optThreads        = argsThreads
                     , optInterfaceLoadingDiagnostics = argsTesting
                     }
+                logLevel = if argsVerbose then minBound else Info
             debouncer <- newAsyncDebouncer
-            initialise caps (mainRule >> pluginRules plugins >> action kick)
-                getLspId event (logger minBound) debouncer options vfs
+            fst <$> initialise caps (mainRule >> pluginRules plugins >> action kick)
+                      getLspId event (logger logLevel) debouncer options vfs
     else do
         -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
         hSetEncoding stdout utf8
@@ -159,13 +161,21 @@ main = do
         putStrLn "\nStep 3/6: Initializing the IDE"
         vfs <- makeVFSHandle
         debouncer <- newAsyncDebouncer
-        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ loadSession dir) vfs
+        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Debug) debouncer (defaultIdeOptions $ loadSession dir) vfs
 
         putStrLn "\nStep 4/6: Type checking the files"
         setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
-        _ <- runActionSync ide $ uses TypeCheck (map toNormalizedFilePath' files)
+--        _ <- runActionSync "TypecheckTest" ide $ uses TypeCheck (map toNormalizedFilePath' files)
 --        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "src/Development/IDE/Core/Rules.hs"
---        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "exe/Main.hs"
+        let fp =  toNormalizedFilePath' "ghc/Main.hs"
+        results <- runActionSync "tc" ide $ use TypeCheck $ toNormalizedFilePath' "ghc/Main.hs"
+        hover1 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
+        print hover1
+        traceMarkerIO "START"
+        hover2 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
+        print hover2
+        traceMarkerIO "END"
+        cancel worker
         return ()
 
 expandFiles :: [FilePath] -> IO [FilePath]
@@ -516,12 +526,12 @@ getCacheDir opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> opts_hash)
 cacheDir :: String
 cacheDir = "ghcide"
 
-compileTimeGhcVersion :: Version
-compileTimeGhcVersion = $$(compileTimeVersionFromLibdir getLibdir)
+--compileTimeGhcVersion :: Version
+--compileTimeGhcVersion = $$(compileTimeVersionFromLibdir getLibdir)
 
 checkGhcVersion :: Ghc (Maybe HscEnvEq)
 checkGhcVersion = do
     v <- runTimeVersion
-    return $ if v == Just compileTimeGhcVersion
+    return $ if True
         then Nothing
-        else Just GhcVersionMismatch {compileTime = compileTimeGhcVersion, runTime = v}
+        else undefined
