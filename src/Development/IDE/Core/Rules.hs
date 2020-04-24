@@ -1,9 +1,9 @@
 -- Copyright (c) 2019 The DAML Authors. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 
-{-# LANGUAGE CPP                   #-}
-{-# LANGUAGE TypeFamilies          #-}
-{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE PatternSynonyms       #-}
 #include "ghc-api-version.h"
@@ -557,7 +557,7 @@ getHiFileRule = defineEarlyCutoff $ \GetHiFile f -> do
               case r of
                 Right iface -> do
                   let result = HiFileResult ms iface
-                  return (Just (fingerprintToBS (mi_mod_hash iface)), ([], Just result))
+                  return (Just (fingerprintToBS (getModuleHash iface)), ([], Just result))
                 Left err -> do
                   let diag = ideErrorWithSource (Just "interface file loading") (Just DsError) f . T.pack $ err
                   return (Nothing, (pure diag, Nothing))
