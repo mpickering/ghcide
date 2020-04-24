@@ -42,11 +42,11 @@ produceCompletions =
 #if MIN_GHC_API_VERSION(8,6,0) && !defined(GHC_LIB)
         let parsedDeps = []
 #else
-        deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStaleFast GetDependencies file
-        parsedDeps <- mapMaybe (fmap fst) <$> usesWithStaleFast GetParsedModule (transitiveModuleDeps deps)
+        deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
+        parsedDeps <- mapMaybe (fmap fst) <$> usesWithStale GetParsedModule (transitiveModuleDeps deps)
 #endif
-        tm <- fmap fst <$> useWithStaleFast TypeCheck file
-        packageState <- fmap (hscEnv . fst) <$> useWithStaleFast GhcSession file
+        tm <- fmap fst <$> useWithStale TypeCheck file
+        packageState <- fmap (hscEnv . fst) <$> useWithStale GhcSession file
         case (tm, packageState) of
             (Just tm', Just packageState') -> do
                 cdata <- liftIO $ cacheDataProducer packageState'
@@ -83,10 +83,10 @@ getCompletionsLSP lsp ide
       fmap Right $ case (contents, uriToFilePath' uri) of
         (Just cnts, Just path) -> do
           let npath = toNormalizedFilePath' path
-          (ideOpts, compls) <- runAction ide $ do
-              opts <- getIdeOptions
-              compls <- useWithStaleFast ProduceCompletions npath
-              pm <- useWithStaleFast GetParsedModule npath
+          (ideOpts, compls) <- do
+              opts <- getIdeOptionsIO ide
+              compls <- useWithStaleFast ide ProduceCompletions npath
+              pm <- useWithStaleFast ide GetParsedModule npath
               pure (opts, liftA2 (,) compls pm)
           case compls of
             Just ((cci', _), (pm, mapping)) -> do
@@ -101,6 +101,9 @@ getCompletionsLSP lsp ide
                 _ -> return (Completions $ List [])
             _ -> return (Completions $ List [])
         _ -> return (Completions $ List [])
+
+-- Debugging
+--wrappedH fs ide c = catch (getCompletionsLSP fs ide c) (\(e :: SomeException) -> putStrLn (show e) >> throwIO e)
 
 setHandlersCompletion :: PartialHandlers c
 setHandlersCompletion = PartialHandlers $ \WithMessage{..} x -> return x{

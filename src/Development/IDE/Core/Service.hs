@@ -8,7 +8,7 @@
 --   using the "Shaker" abstraction layer for in-memory use.
 --
 module Development.IDE.Core.Service(
-    getIdeOptions,
+    getIdeOptions, getIdeOptionsIO,
     IdeState, initialise, shutdown,
     runAction,
     runActionSync,
@@ -104,4 +104,9 @@ runActionSync s act = fmap head $ join $ shakeRun s [act]
 getIdeOptions :: Action IdeOptions
 getIdeOptions = do
     GlobalIdeOptions x <- getIdeGlobalAction
+    return x
+
+getIdeOptionsIO :: IdeState -> IO IdeOptions
+getIdeOptionsIO ide = do
+    GlobalIdeOptions x <- getIdeGlobalState ide
     return x

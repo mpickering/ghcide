@@ -472,16 +472,20 @@ useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
 
-useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
-useWithStaleFast key file =
+useWithStaleFast :: IdeRule k v => IdeState -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
+useWithStaleFast ide key file = do
   let k = (Q (key, file))
-  in do
-    r <- lookupKeyNoBuild k
+  final_res <- fmap head $ join $ shakeRun ide $ [do
+    r <- getDatabaseValueStale k
     case r of
+      -- The value has never been computed so build the rule
       Nothing -> useWithStale key file
-      Just (A v _) -> lastValue file v
---    values <- map (\(A value _) -> value) <$> apply (map (Q . (key,)) files)
---    mapM (uncurry lastValue) (zip files values)
+      -- Otherwise, use the computed value even if it's out of date.
+      Just (A v _) -> do
+        res <- lastValue file v
+        return res]
+  forkIO $ void $ join $ shakeRun ide [use key file]
+  return final_res
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath
