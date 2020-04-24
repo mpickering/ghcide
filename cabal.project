@@ -33,7 +33,7 @@ profiling-detail: toplevel-functions
 source-repository-package
     type: git
     location: https://github.com/mpickering/shake
-    tag: e7e0c1d1f9e54d67b26baf1e63b9caaf73b73e2b
+    tag: f0a240d4d114d3a362c5b8e64fa719a041872729
 
 
 
