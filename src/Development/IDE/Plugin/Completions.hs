@@ -83,10 +83,10 @@ getCompletionsLSP lsp ide
       fmap Right $ case (contents, uriToFilePath' uri) of
         (Just cnts, Just path) -> do
           let npath = toNormalizedFilePath' path
-          (ideOpts, compls) <- do
-              opts <- getIdeOptionsIO ide
-              compls <- useWithStaleFast "Completion" ide ProduceCompletions npath
-              pm <- useWithStaleFast "Completion" ide GetParsedModule npath
+          (ideOpts, compls) <- runAction "Completion" ide $ do
+              opts <- getIdeOptions
+              compls <- useWithStaleFast ProduceCompletions npath
+              pm <- useWithStaleFast GetParsedModule npath
               pure (opts, liftA2 (,) compls pm)
           case compls of
             Just ((cci', _), (pm, mapping)) -> do

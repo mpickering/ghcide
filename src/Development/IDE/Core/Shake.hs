@@ -85,6 +85,7 @@ import           System.IO.Unsafe
 import           Numeric.Extra
 import Language.Haskell.LSP.Types
 import Data.Either.Extra
+import Control.Monad.IO.Class
 
 
 -- information we stash inside the shakeExtra field
@@ -104,6 +105,8 @@ data ShakeExtras = ShakeExtras
     -- positions in a version of that document to positions in the latest version
     ,inProgress :: Var (HMap.HashMap NormalizedFilePath Int)
     -- ^ How many rules are running for each file
+    , abort :: MVar (IO ())
+    , profileDir :: Maybe FilePath
     }
 
 getShakeExtras :: Action ShakeExtras
@@ -232,9 +235,9 @@ data IdeState = IdeState
 
 
 -- This is debugging code that generates a series of profiles, if the Boolean is true
-shakeRunDatabaseProfile :: Maybe FilePath -> ShakeDatabase -> [Action a] -> IO ([a], Maybe FilePath)
+shakeRunDatabaseProfile :: Maybe FilePath -> ShakeDatabase -> [Action a] -> IO (([a], [IO ()]), Maybe FilePath)
 shakeRunDatabaseProfile mbProfileDir shakeDb acts = do
-        (time, (res,_)) <- duration $ shakeRunDatabase shakeDb acts
+        (time, res) <- duration $ shakeRunDatabase shakeDb acts
         proFile <- for mbProfileDir $ \dir -> do
                 count <- modifyVar profileCounter $ \x -> let !y = x+1 in return (y,y)
                 let file = "ide-" ++ profileStartTime ++ "-" ++ takeEnd 5 ("0000" ++ show count) ++ "-" ++ showDP 2 time <.> "html"
@@ -305,6 +308,7 @@ shakeOpen :: IO LSP.LspId
           -> IO IdeState
 shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) opts rules = do
     inProgress <- newVar HMap.empty
+    shakeAbort <- newMVar $ return ()
     shakeExtras <- do
         globals <- newVar HMap.empty
         state <- newVar HMap.empty
@@ -312,6 +316,8 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
         hiddenDiagnostics <- newVar mempty
         publishedDiagnostics <- newVar mempty
         positionMapping <- newVar HMap.empty
+        let abort = shakeAbort
+        let profileDir = shakeProfileDir
         pure ShakeExtras{..}
     (shakeDb, shakeClose) <-
         shakeOpenDatabase
@@ -322,7 +328,6 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
                 , shakeProgress = const $ if reportProgress then lspShakeProgress getLspId eventer inProgress else pure ()
                 }
             rules
-    shakeAbort <- newMVar $ return ()
     shakeDb <- shakeDb
     return IdeState{..}
 
@@ -394,16 +399,24 @@ withMVar' var unmasked masked = mask $ \restore -> do
     putMVar var a'
     pure c
 
+-- | These actions are run asynchronously after the current action is
+-- finished running. For example, to trigger a key build after a rule
+-- has already finished as is the case with useWithStaleFast
+delayedAction :: String -> Action () -> Action ()
+delayedAction herald a = do
+  s <- getShakeExtras
+  runAfterDB (\db -> do
+    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
+
 -- | Running an action which DIRECTLY corresponds to something a user did,
 -- for example computing hover information.
 shakeRunUser :: String -> IdeState -> [Action a] -> IO (IO [a])
-shakeRunUser = shakeRun Info
-
+shakeRunUser s IdeState{..} as = shakeRun Info s shakeExtras as shakeDb
 -- | Running an action which is INTERNAL to shake, for example, a file has
 -- been modified, basically any use of shakeRun which is not blocking (ie
 -- which is not called via runAction).
 shakeRunInternal :: String -> IdeState -> [Action a] -> IO ()
-shakeRunInternal s i a = void (shakeRun Debug s i a)
+shakeRunInternal s IdeState{..} as = void $ shakeRun Debug s shakeExtras as shakeDb
 
 -- | Spawn immediately. If you are already inside a call to shakeRun that will be aborted with an exception.
 shakeRun :: Logger.Priority
@@ -411,10 +424,10 @@ shakeRun :: Logger.Priority
                                 -- Some requests are very internal to shake
                                 -- and don't make much sense to normal
                                 -- users.
-         -> IdeState -> [Action a] -> IO (IO [a])
-shakeRun p herald IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
+         -> ShakeExtras -> [Action a] -> ShakeDatabase -> IO (IO [a])
+shakeRun p herald ShakeExtras{..} acts db =
     withMVar'
-        shakeAbort
+        abort
         (\stop -> do
               (stopTime,_) <- duration stop
               return ()
@@ -426,7 +439,7 @@ shakeRun p herald IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
         (do
               start <- offsetTime
               aThread <- asyncWithUnmask $ \restore -> do
-                   res <- try (restore $ shakeRunDatabaseProfile shakeProfileDir shakeDb acts)
+                   res <- try (restore $ shakeRunDatabaseProfile profileDir db acts)
                    runTime <- start
                    let res' = case res of
                             Left e -> "exception: " <> displayException e
@@ -445,7 +458,11 @@ shakeRun p herald IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
               _ <- async $ do
                   (_, logMsg) <- wait aThread
                   logMsg
-              pure (cancel aThread, wrapUp =<< wait aThread))
+              let k = do
+                        (res, as) <- (wrapUp =<< wait aThread)
+                        sequence_ as
+                        return res
+              pure (cancel aThread, k))
 
 getDiagnostics :: IdeState -> IO [FileDiagnostic]
 getDiagnostics IdeState{shakeExtras = ShakeExtras{diagnostics}} = do
@@ -491,26 +508,28 @@ useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
 
-useWithStaleFast :: IdeRule k v => String -> IdeState -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
-useWithStaleFast prefix ide key file = do
-  final_res <-  runAction ("FAST:" ++ prefix ++ ":" ++ show key) ide $ do
+useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
+useWithStaleFast key file = do
+  final_res <-  do
     -- This lookup directly looks up the key in the shake database and
     -- returns the last value that was computed for this key without
     -- checking freshness.
-    let ShakeExtras{state} = shakeExtras ide
+
+    ShakeExtras{state} <- getShakeExtras
     r <- liftIO $ getValues state key file
     case r of
       Nothing -> do
         -- Perhaps for Hover this should return Nothing immediatey but for
         -- completions it should block? Not for MP to decide, need AZ and
         -- F to comment
-        -- return Nothing
-        useWithStale key file
+        return Nothing
+        --useWithStale key file
       -- Otherwise, use the computed value even if it's out of date.
       Just v -> lastValue file v
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
-  shakeRunInternal ("C:" ++ (show key)) ide [use key file]
+  --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
+  delayedAction ("C:" ++ (show key)) (void $ use key file)
   return final_res
 
 -- This will return as soon as the result of the action is
@@ -525,7 +544,9 @@ runAction herald ide action = do
     -- Therefore we wait for either res (which propagates the exception) or the barrier.
     -- Importantly, if the barrier does finish, cancelling res only kills waiting for the result,
     -- it doesn't kill the actual work
-    fmap fromEither $ race (head <$> res) $ waitBarrier bar
+    a1 <- async (head <$> res)
+    a2 <- async (waitBarrier bar)
+    fromEither <$> waitEither a1 a2
 
 
 -- | `runActionSync` is similar to `runAction` but it will
@@ -756,12 +777,12 @@ decodeShakeValue bs = case BS.uncons bs of
       | otherwise -> error $ "Failed to parse shake value " <> show bs
 
 
-updateFileDiagnostics ::
-     NormalizedFilePath
+updateFileDiagnostics :: MonadIO m
+  => NormalizedFilePath
   -> Key
   -> ShakeExtras
   -> [(ShowDiagnostic,Diagnostic)] -- ^ current results
-  -> Action ()
+  -> m ()
 updateFileDiagnostics fp k ShakeExtras{diagnostics, hiddenDiagnostics, publishedDiagnostics, state, debouncer, eventer} current = liftIO $ do
     modTime <- join . fmap currentValue <$> getValues state GetModificationTime fp
     let (currentShown, currentHidden) = partition ((== ShowDiag) . fst) current
