@@ -7,6 +7,7 @@ module Development.IDE.Core.FileStore(
     getFileContents,
     getVirtualFile,
     setBufferModified,
+    setFileModified,
     setSomethingModified,
     fileStoreRules,
     VFSHandle,
@@ -43,6 +44,8 @@ import Foreign.Marshal (alloca)
 import Foreign.Storable
 import qualified System.Posix.Error as Posix
 #endif
+
+import Development.IDE.Core.RuleTypes
 
 import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.VFS
@@ -175,6 +178,15 @@ setBufferModified state absFile contents = do
     whenJust setVirtualFileContents $ \set ->
         set (filePathToUri' absFile) contents
     shakeRunInternal "FileStoreBuffer" state []
+
+-- | Note that some buffer for a specific file has been modified but not
+-- with what changes.
+setFileModified :: IdeState -> NormalizedFilePath -> IO ()
+setFileModified state nfp = do
+    VFSHandle{..} <- getIdeGlobalState state
+    when (isJust setVirtualFileContents) $
+        fail "setSomethingModified can't be called on this type of VFSHandle"
+    shakeRunInternal "FileStoreSomething" state [use TypeCheck nfp]
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that
