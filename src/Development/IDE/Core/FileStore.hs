@@ -7,6 +7,7 @@ module Development.IDE.Core.FileStore(
     getFileContents,
     getVirtualFile,
     setBufferModified,
+    setFileModified,
     setSomethingModified,
     fileStoreRules,
     VFSHandle,
@@ -44,6 +45,8 @@ import Foreign.Marshal (alloca)
 import Foreign.Storable
 import qualified System.Posix.Error as Posix
 #endif
+
+import Development.IDE.Core.RuleTypes
 
 import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.VFS

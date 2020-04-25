@@ -28,6 +28,7 @@ import Development.Shake
 import Development.IDE.Types.Location
 import Development.IDE.Types.Logger
 import Development.IDE.Core.Shake
+import Development.IDE.Core.RuleTypes
 
 
 newtype OfInterestVar = OfInterestVar (Var (HashSet NormalizedFilePath))
@@ -78,4 +79,4 @@ modifyFilesOfInterest state f = do
     OfInterestVar var <- getIdeGlobalState state
     files <- modifyVar var $ pure . dupe . f
     logDebug (ideLogger state) $ "Set files of interest to: " <> T.pack (show $ HashSet.toList files)
-    shakeRunInternal "OfInterest" state []
+    shakeRunInternal "OfInterest" state [uses TypeCheck (HashSet.toList files)]
