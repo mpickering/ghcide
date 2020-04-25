@@ -133,9 +133,10 @@ main = do
                     , optThreads        = argsThreads
                     , optInterfaceLoadingDiagnostics = argsTesting
                     }
+                logLevel = if argsVerbose then minBound else Info
             debouncer <- newAsyncDebouncer
             initialise caps (mainRule >> pluginRules plugins >> action kick)
-                getLspId event (logger minBound) debouncer options vfs
+                getLspId event (logger logLevel) debouncer options vfs
     else do
         -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
         hSetEncoding stdout utf8
@@ -162,7 +163,7 @@ main = do
 
         putStrLn "\nStep 4/6: Type checking the files"
         setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
-        _ <- runActionSync ide $ uses TypeCheck (map toNormalizedFilePath' files)
+        _ <- runActionSync "TypecheckTest" ide $ uses TypeCheck (map toNormalizedFilePath' files)
 --        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "src/Development/IDE/Core/Rules.hs"
 --        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "exe/Main.hs"
         return ()

@@ -87,11 +87,11 @@ toIdeResult = either (, Nothing) (([],) . Just)
 
 -- | useE is useful to implement functions that aren’t rules but need shortcircuiting
 -- e.g. getDefinition.
-useE :: IdeRule k v => IdeState -> k -> NormalizedFilePath -> MaybeT IO (v, PositionMapping)
-useE ide k = MaybeT . useWithStaleFast ide k
+useE :: IdeRule k v => String -> IdeState -> k -> NormalizedFilePath -> MaybeT IO (v, PositionMapping)
+useE prefix ide k = MaybeT . useWithStaleFast prefix ide  k
 
 useNoFileE :: IdeRule k v => IdeState -> k -> MaybeT IO v
-useNoFileE ide k = fst <$> useE ide k emptyFilePath
+useNoFileE ide k = fst <$> useE "" ide k emptyFilePath
 
 usesE :: IdeRule k v => k -> [NormalizedFilePath] -> MaybeT Action [v]
 usesE k = MaybeT . fmap sequence . uses k
@@ -114,7 +114,7 @@ getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 getAtPoint :: IdeState -> NormalizedFilePath -> Position -> IO (Maybe (Maybe Range, [T.Text]))
 getAtPoint ide file pos = fmap join $ runMaybeT $ do
   opts <- lift $ getIdeOptionsIO ide
-  (spans, mapping) <- useE ide GetSpanInfo file
+  (spans, mapping) <- useE "Hover" ide GetSpanInfo file
   !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
   return $ AtPoint.atPoint opts spans pos'
 
@@ -122,13 +122,13 @@ getAtPoint ide file pos = fmap join $ runMaybeT $ do
 getDefinition :: IdeState -> NormalizedFilePath -> Position -> IO (Maybe Location)
 getDefinition ide file pos = fmap join $ runMaybeT $ do
     opts <- lift $ getIdeOptionsIO ide
-    spans <- fst <$> useE ide GetSpanInfo file
+    spans <- fst <$> useE "Def" ide GetSpanInfo file
     lift $ AtPoint.gotoDefinition (getHieFile ide file) opts (spansExprs spans) pos
 
 getTypeDefinition :: IdeState -> NormalizedFilePath -> Position -> IO (Maybe Location)
 getTypeDefinition ide file pos = fmap join $ runMaybeT $ do
     opts <- lift $ getIdeOptionsIO ide
-    spans <- fst <$> useE ide GetSpanInfo file
+    spans <- fst <$> useE "TypeDef" ide GetSpanInfo file
     lift $ AtPoint.gotoTypeDefinition (getHieFile ide file) opts (spansExprs spans) pos
 
 
@@ -137,7 +137,7 @@ getHieFile
   -> NormalizedFilePath -- ^ file we're editing
   -> Module -- ^ module dep we want info for
   -> IO (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
-getHieFile ide file mod = runAction ide $ do
+getHieFile ide file mod = runAction "getHieFile" ide $ do
   TransitiveDependencies {transitiveNamedModuleDeps} <- use_ GetDependencies file
   case find (\x -> nmdModuleName x == moduleName mod) transitiveNamedModuleDeps of
     Just NamedModuleDep{nmdFilePath=nfp} -> do

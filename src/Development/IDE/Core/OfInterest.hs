@@ -23,7 +23,6 @@ import Data.HashSet (HashSet)
 import qualified Data.HashSet as HashSet
 import qualified Data.Text as T
 import Data.Tuple.Extra
-import Data.Functor
 import Development.Shake
 
 import Development.IDE.Types.Location
@@ -79,4 +78,4 @@ modifyFilesOfInterest state f = do
     OfInterestVar var <- getIdeGlobalState state
     files <- modifyVar var $ pure . dupe . f
     logDebug (ideLogger state) $ "Set files of interest to: " <> T.pack (show $ HashSet.toList files)
-    void $ shakeRun state []
+    shakeRunInternal "OfInterest" state []

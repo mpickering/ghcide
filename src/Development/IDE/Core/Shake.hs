@@ -23,7 +23,7 @@ module Development.IDE.Core.Shake(
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
     IdeRule, IdeResult, GetModificationTime(..),
     shakeOpen, shakeShut,
-    shakeRun,
+    shakeRun, shakeRunInternal, shakeRunUser,
     shakeProfile,
     use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast,
     use_, useNoFile_, uses_,
@@ -43,7 +43,7 @@ module Development.IDE.Core.Shake(
     OnDiskRule(..),
     ) where
 
-import           Development.Shake hiding (ShakeValue, doesFileExist)
+import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
 import           Development.Shake.Database
 import           Development.Shake.Classes
 import           Development.Shake.Rule
@@ -62,6 +62,7 @@ import Data.Unique
 import Development.IDE.Core.Debouncer
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Types.Logger hiding (Priority)
+import qualified Development.IDE.Types.Logger as Logger
 import Language.Haskell.LSP.Diagnostics
 import qualified Data.SortedList as SL
 import           Development.IDE.Types.Diagnostics
@@ -393,14 +394,31 @@ withMVar' var unmasked masked = mask $ \restore -> do
     putMVar var a'
     pure c
 
+-- | Running an action which DIRECTLY corresponds to something a user did,
+-- for example computing hover information.
+shakeRunUser :: String -> IdeState -> [Action a] -> IO (IO [a])
+shakeRunUser = shakeRun Info
+
+-- | Running an action which is INTERNAL to shake, for example, a file has
+-- been modified, basically any use of shakeRun which is not blocking (ie
+-- which is not called via runAction).
+shakeRunInternal :: String -> IdeState -> [Action a] -> IO ()
+shakeRunInternal s i a = void (shakeRun Debug s i a)
+
 -- | Spawn immediately. If you are already inside a call to shakeRun that will be aborted with an exception.
-shakeRun :: IdeState -> [Action a] -> IO (IO [a])
-shakeRun IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
+shakeRun :: Logger.Priority
+         -> String  -- A name for the action and at which logging priority it should be displayed.
+                                -- Some requests are very internal to shake
+                                -- and don't make much sense to normal
+                                -- users.
+         -> IdeState -> [Action a] -> IO (IO [a])
+shakeRun p herald IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
     withMVar'
         shakeAbort
         (\stop -> do
               (stopTime,_) <- duration stop
-              logDebug logger $ T.pack $ "Starting shakeRun (aborting the previous one took " ++ showDuration stopTime ++ ")"
+              return ()
+              logPriority logger p $ T.pack $ "start shakeRun: " ++ herald ++ " (abort time:" ++ showDuration stopTime ++ ")"
         )
         -- It is crucial to be masked here, otherwise we can get killed
         -- between spawning the new thread and updating shakeAbort.
@@ -419,8 +437,8 @@ shakeRun IdeState{shakeExtras=ShakeExtras{..}, ..} acts =
                                                 NormalizedUri _ x -> x
                                 in ", profile saved at " <> T.unpack link
                             _ -> ""
-                   let logMsg = logDebug logger $ T.pack $
-                        "Finishing shakeRun (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
+                   let logMsg = logPriority logger p $ T.pack $
+                        "finish shakeRun: " ++ herald ++ " (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
                    return (fst <$> res, logMsg)
               let wrapUp (res, _) = do
                     either (throwIO @SomeException) return res
@@ -473,31 +491,35 @@ useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
 
-useWithStaleFast :: IdeRule k v => IdeState -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
-useWithStaleFast ide key file = do
-  final_res <- runAction ide $ do
+useWithStaleFast :: IdeRule k v => String -> IdeState -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
+useWithStaleFast prefix ide key file = do
+  final_res <-  runAction ("FAST:" ++ prefix ++ ":" ++ show key) ide $ do
     -- This lookup directly looks up the key in the shake database and
     -- returns the last value that was computed for this key without
     -- checking freshness.
     let ShakeExtras{state} = shakeExtras ide
     r <- liftIO $ getValues state key file
     case r of
-      -- The value has never been computed so build the rule
-      Nothing -> useWithStale key file
+      Nothing -> do
+        -- Perhaps for Hover this should return Nothing immediatey but for
+        -- completions it should block? Not for MP to decide, need AZ and
+        -- F to comment
+        -- return Nothing
+        useWithStale key file
       -- Otherwise, use the computed value even if it's out of date.
       Just v -> lastValue file v
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
-  void $ shakeRun ide [use key file]
+  shakeRunInternal ("C:" ++ (show key)) ide [use key file]
   return final_res
 
 -- This will return as soon as the result of the action is
 -- available.  There might still be other rules running at this point,
 -- e.g., the ofInterestRule.
-runAction :: IdeState -> Action a -> IO a
-runAction ide action = do
+runAction :: String -> IdeState -> Action a -> IO a
+runAction herald ide action = do
     bar <- newBarrier
-    res <- shakeRun ide [do v <- action; liftIO $ signalBarrier bar v; return v]
+    res <- shakeRunUser herald ide [do v <- action; liftIO $ signalBarrier bar v; return v]
     -- shakeRun might throw an exception (either through action or a default rule),
     -- in which case action may not complete successfully, and signalBarrier might not be called.
     -- Therefore we wait for either res (which propagates the exception) or the barrier.
@@ -510,8 +532,8 @@ runAction ide action = do
 -- wait for all rules (so in particular the `ofInterestRule`) to
 -- finish running. This is mainly useful in tests, where you want
 -- to wait for all rules to fire so you can check diagnostics.
-runActionSync :: IdeState -> Action a -> IO a
-runActionSync s act = fmap head $ join $ shakeRun s [act]
+runActionSync :: String -> IdeState -> Action a -> IO a
+runActionSync herald s act = fmap head $ join $ shakeRunUser herald s [act]
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath

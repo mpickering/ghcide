@@ -73,11 +73,12 @@ codeAction lsp state (TextDocumentIdentifier uri) _range CodeActionContext{_diag
     contents <- LSP.getVirtualFileFunc lsp $ toNormalizedUri uri
     let text = Rope.toText . (_text :: VirtualFile -> Rope.Rope) <$> contents
         mbFile = toNormalizedFilePath' <$> uriToFilePath uri
-    (ideOptions, parsedModule, join -> env) <- runAction state $
+    (ideOptions, parsedModule, join -> env) <- runAction "CodeAction" state $
       (,,) <$> getIdeOptions
             <*> getParsedModule `traverse` mbFile
             <*> use GhcSession `traverse` mbFile
-    pkgExports <- runAction state $ (useNoFile_ . PackageExports) `traverse` env
+    -- This is quite expensive 0.6-0.7s on GHC
+    pkgExports <- runAction "CodeAction:PackageExports" state $ (useNoFile_ . PackageExports) `traverse` env
     let dflags = hsc_dflags . hscEnv <$> env
     pure $ Right
         [ CACodeAction $ CodeAction title (Just CodeActionQuickFix) (Just $ List [x]) (Just edit) Nothing
@@ -94,7 +95,7 @@ codeLens
 codeLens _lsp ideState CodeLensParams{_textDocument=TextDocumentIdentifier uri} = do
     fmap (Right . List) $ case uriToFilePath' uri of
       Just (toNormalizedFilePath' -> filePath) -> do
-        _ <- runMaybeT $ useE ideState TypeCheck filePath
+        _ <- runMaybeT $ useE "CodeLens" ideState TypeCheck filePath
         diag <- getDiagnostics ideState
         hDiag <- getHiddenDiagnostics ideState
         pure
