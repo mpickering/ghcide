@@ -23,7 +23,7 @@ module Development.IDE.Core.Shake(
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
     IdeRule, IdeResult, GetModificationTime(..),
     shakeOpen, shakeShut,
-    shakeRun, shakeRunInternal, shakeRunUser,
+    shakeRun, shakeRunInternal, shakeRunInternalKill, shakeRunUser,
     shakeProfile,
     use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast, delayedAction,
     use_, useNoFile_, uses_,
@@ -93,6 +93,7 @@ import Data.Either.Extra
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Writer
+import qualified Data.HashPSQ as PQ
 
 
 -- information we stash inside the shakeExtra field
@@ -247,28 +248,70 @@ data IdeState = IdeState
     ,shakeProfileDir :: Maybe FilePath
     }
 
+
+data QPriority = QPriority { retries :: Int
+                           , qid :: Int
+                           , qimportant :: Bool } deriving Eq
+
+instance Ord QPriority where
+    compare (QPriority r q i) (QPriority r' q' i') = compare i i' <> compare r r' <> compare q q'
+
+
+type PriorityMap = PQ.HashPSQ Int QPriority DelayedAction
+
 -- | Actions we want to run on the shake database are queued up and batched together.
 -- A batch can be killed when a file is modified as we assume it will invalidate it.
 data ShakeQueue = ShakeQueue
-                { qactions :: Chan DelayedAction
-                , qabort :: MVar (IO ())
+                { qactions :: Var PriorityMap
+                , qabort :: Var (IO () -> IO ())
+                , qcount :: Var Int
+                -- We take this MVar when the actions are empty, it is filled
+                -- when an action is written to the map
+                , qTrigger :: MVar ()
                 }
 
-data DelayedAction = DelayedAction String Logger.Priority (IO Bool) (Action ())
+data DelayedAction = DelayedAction { actionName :: String
+                                   , actionId :: Int
+                                   , actionQPriority :: QPriority
+                                   , actionPriority :: Logger.Priority
+                                   , actionFinished :: (IO Bool)
+                                   , getAction :: (Action ()) }
+
+instance Show DelayedAction where
+    show d = "DelayedAction: " ++ actionName d
 
 finishedBarrier :: Barrier a -> IO Bool
 finishedBarrier b = isJust <$> waitBarrierMaybe b
 
+freshId :: ShakeQueue -> IO Int
+freshId (ShakeQueue{qcount}) = do
+    modifyVar qcount (\n -> return (n + 1, n))
+
 queueAction :: String -> Logger.Priority -> [Action a] -> ShakeQueue -> IO [Barrier a]
 queueAction s p as sq = do
-    (bs, ds) <- unzip <$> mapM (mkDelayedAction s p) as
-    writeList2Chan (qactions sq) ds
+    (bs, ds) <- unzip <$> mapM (mkDelayedAction sq s p) as
+    modifyVar_ (qactions sq) (return . insertMany ds)
+    -- Wake up the worker if necessary
+    void $ tryPutMVar (qTrigger sq) ()
     return bs
 
-mkDelayedAction :: String -> Logger.Priority -> Action a -> IO (Barrier a, DelayedAction)
-mkDelayedAction s p a = do
+insertMany :: [DelayedAction] -> PriorityMap -> PriorityMap
+insertMany ds pm = foldr (\d pm' -> PQ.insert (actionId d) (getPriority d) d pm') pm ds
+
+queueDelayedAction :: DelayedAction -> ShakeQueue -> IO ()
+queueDelayedAction d sq = do
+    modifyVar_ (qactions sq) (return . PQ.insert (actionId d) (getPriority d) d)
+    -- Wake up the worker if necessary
+    void $ tryPutMVar (qTrigger sq) ()
+
+getPriority :: DelayedAction -> QPriority
+getPriority DelayedAction{..} = actionQPriority
+
+mkDelayedAction :: ShakeQueue -> String -> Logger.Priority -> Action a -> IO (Barrier a, DelayedAction)
+mkDelayedAction sq s p a = do
     b <- newBarrier
-    let d = DelayedAction s p (finishedBarrier b)
+    i <- freshId sq
+    let d = DelayedAction s i (QPriority 0 i False) p (finishedBarrier b)
                   (do r <- a
                       liftIO $ signalBarrier b r)
     return (b, d)
@@ -276,18 +319,55 @@ mkDelayedAction s p a = do
 
 newShakeQueue :: IO ShakeQueue
 newShakeQueue = do
-    ShakeQueue <$> newChan <*> (newMVar (return ()))
+    ShakeQueue <$> newVar (PQ.empty) <*> (newVar id) <*> newVar 0 <*> newEmptyMVar
+
+requeueIfCancelled :: ShakeQueue -> DelayedAction -> IO ()
+requeueIfCancelled sq d@(DelayedAction{..}) = do
+    is_finished <- actionFinished
+    unless is_finished (queueDelayedAction d sq)
+
+logDelayedAction :: Logger -> DelayedAction -> Action ()
+logDelayedAction l d  = do
+    start <- liftIO $ offsetTime
+    getAction d
+    runTime <- liftIO $ start
+    return ()
+    liftIO $ logPriority l (actionPriority d) $ T.pack $
+        "finish: " ++ (actionName d) ++ " (took " ++ showDuration runTime ++ ")"
+
+-- | Retrieve up to k values from the map and return the modified map
+smallestK :: Int -> PriorityMap -> (PriorityMap, [DelayedAction])
+smallestK 0 p = (p, [])
+smallestK n p = case PQ.minView p of
+                    Nothing -> (p, [])
+                    Just (_, _, v, p') ->
+                        let (p'', ds) = smallestK (n - 1) p'
+                        in (p'', v:ds)
+
 
 
 -- | A thread which continually reads from the queue running shake actions
 workerThread :: IdeState -> IO ()
-workerThread i@IdeState{shakeQueue=ShakeQueue{..},..} = do
-    DelayedAction s p finished act <- readChan qactions
-    (cancel, wait) <- shakeRun p s i [act]
-    swapMVar qabort cancel
-    _res <- wait
-    swapMVar qabort (return ())
-    return ()
+workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
+    -- I choose 5 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
+    ds <- modifyVar qactions (return . smallestK 5)
+    case ds of
+        [] -> takeMVar qTrigger
+        _ -> do
+            logDebug (logger shakeExtras) (T.pack $ "Starting: " ++ show ds)
+            (cancel, wait) <- shakeRun Debug "batch" i (map (logDelayedAction (logger shakeExtras)) ds)
+            writeVar qabort (\k -> do
+                k
+                cancel
+                mapM_ (requeueIfCancelled sq) ds)
+            res <- try wait
+            case res of
+                -- Really don't want an exception to kill this thread but not sure where it should go
+                Left (e :: SomeException) -> return ()
+                Right r -> return ()
+            -- Action finished, nothing to abort now
+            writeVar qabort id
+            return ()
 
 
 
@@ -490,6 +570,16 @@ shakeRunUser s ide as = do
 -- which is not called via runAction).
 shakeRunInternal :: String -> IdeState -> [Action a] -> IO ()
 shakeRunInternal s ide as = void $ queueAction s Debug as (shakeQueue ide)
+
+-- | Like shakeRun internal but kill ongoing work first
+shakeRunInternalKill :: String -> IdeState -> [Action a] -> IO ()
+shakeRunInternalKill s ide as = do
+    -- TODO: There is a race here if the actions get queued
+    -- and start to run before the kill, sh
+    let k = shakeRunInternal s ide as
+    kill <- readVar (qabort (shakeQueue ide))
+    kill k
+
 
 -- | Spawn immediately. If you are already inside a call to shakeRun that will be aborted with an exception.
 shakeRun :: Logger.Priority

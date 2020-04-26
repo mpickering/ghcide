@@ -178,7 +178,7 @@ setBufferModified state absFile contents = do
     VFSHandle{..} <- getIdeGlobalState state
     whenJust setVirtualFileContents $ \set ->
         set (filePathToUri' absFile) contents
-    shakeRunInternal "FileStoreBuffer" state []
+    shakeRunInternalKill "FileStoreBuffer" state []
 
 -- | Note that some buffer for a specific file has been modified but not
 -- with what changes.
@@ -187,7 +187,7 @@ setFileModified state nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternal "FileStoreTC" state [void (use TypeCheck nfp)] --, void (useNoFile GetModuleGraph)]
+    shakeRunInternalKill "FileStoreTC" state [void (use TypeCheck nfp)] --, void (useNoFile GetModuleGraph)]
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that
@@ -197,4 +197,4 @@ setSomethingModified state = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternal "FileStoreSomething" state []
+    shakeRunInternalKill "FileStoreSomething" state []
