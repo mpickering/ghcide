@@ -234,17 +234,13 @@ data IdeState = IdeState
     }
 
 
--- This is debugging code that generates a series of profiles, if the Boolean is true
-shakeRunDatabaseProfile :: Maybe FilePath -> ShakeDatabase -> [Action a] -> IO (([a], [IO ()]), Maybe FilePath)
-shakeRunDatabaseProfile mbProfileDir shakeDb acts = do
-        (time, res) <- duration $ shakeRunDatabase shakeDb acts
-        proFile <- for mbProfileDir $ \dir -> do
-                count <- modifyVar profileCounter $ \x -> let !y = x+1 in return (y,y)
-                let file = "ide-" ++ profileStartTime ++ "-" ++ takeEnd 5 ("0000" ++ show count) ++ "-" ++ showDP 2 time <.> "html"
-                shakeProfileDatabase shakeDb $ dir </> file
-                return (dir </> file)
-        return (res, proFile)
-    where
+-- Write a profile of the last action to be completed
+shakeWriteProfile :: String -> ShakeDatabase -> Seconds -> FilePath -> IO FilePath
+shakeWriteProfile herald shakeDb time dir = do
+     count <- modifyVar profileCounter $ \x -> let !y = x+1 in return (y,y)
+     let file = herald ++ "-ide-" ++ profileStartTime ++ "-" ++ takeEnd 5 ("0000" ++ show count) ++ "-" ++ showDP 2 time <.> "html"
+     shakeProfileDatabase shakeDb $ dir </> file
+     return (dir </> file)
 
 {-# NOINLINE profileStartTime #-}
 profileStartTime :: String
@@ -437,27 +433,31 @@ shakeRun p herald ShakeExtras{..} acts db =
         -- between spawning the new thread and updating shakeAbort.
         -- See https://github.com/digital-asset/ghcide/issues/79
         (do
-              start <- offsetTime
               aThread <- asyncWithUnmask $ \restore -> do
-                   res <- try (restore $ shakeRunDatabaseProfile profileDir db acts)
-                   runTime <- start
+                    -- Try to run the action and record how long it took
+                   (runTime, res) <- duration $ try (restore $ shakeRunDatabase db acts)
+
+                   -- Write a profile when the action completed normally
+                   profile <- case res of
+                     Left {}  -> return ""
+                     Right {} -> do
+                      mfp <- forM profileDir (shakeWriteProfile herald db runTime)
+                      case mfp of
+                        Just fp ->  return $
+                          let link = case filePathToUri' $ toNormalizedFilePath' fp of
+                                                NormalizedUri _ x -> x
+                          in ", profile saved at " <> T.unpack link
+                        Nothing -> return ""
+
                    let res' = case res of
                             Left e -> "exception: " <> displayException e
                             Right _ -> "completed"
-                       profile = case res of
-                            Right (_, Just fp) ->
-                                let link = case filePathToUri' $ toNormalizedFilePath' fp of
-                                                NormalizedUri _ x -> x
-                                in ", profile saved at " <> T.unpack link
-                            _ -> ""
-                   let logMsg = logPriority logger p $ T.pack $
+                   logPriority logger p $ T.pack $
                         "finish shakeRun: " ++ herald ++ " (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
-                   return (fst <$> res, logMsg)
-              let wrapUp (res, _) = do
-                    either (throwIO @SomeException) return res
-              _ <- async $ do
-                  (_, logMsg) <- wait aThread
-                  logMsg
+                   return res
+              let wrapUp res = either (throwIO @SomeException) return res
+              -- An action which can be used to block on the result of
+              -- shakeRun returning
               let k = do
                         (res, as) <- (wrapUp =<< wait aThread)
                         sequence_ as
@@ -525,34 +525,22 @@ useWithStaleFast key file = do
         return Nothing
         --useWithStale key file
       -- Otherwise, use the computed value even if it's out of date.
-      Just v -> lastValue file v
+      Just v -> do
+        lastValue file v
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
   delayedAction ("C:" ++ (show key)) (void $ use key file)
   return final_res
 
--- This will return as soon as the result of the action is
--- available.  There might still be other rules running at this point,
--- e.g., the ofInterestRule.
+-- MattP: Removed the distinction between runAction and runActionSync
+-- as it is no longer necessary now the are no `action` rules. This is how
+-- it should remain as they add a lot of overhead for hover for example if
+-- you run them every time.
 runAction :: String -> IdeState -> Action a -> IO a
-runAction herald ide action = do
-    bar <- newBarrier
-    res <- shakeRunUser herald ide [do v <- action; liftIO $ signalBarrier bar v; return v]
-    -- shakeRun might throw an exception (either through action or a default rule),
-    -- in which case action may not complete successfully, and signalBarrier might not be called.
-    -- Therefore we wait for either res (which propagates the exception) or the barrier.
-    -- Importantly, if the barrier does finish, cancelling res only kills waiting for the result,
-    -- it doesn't kill the actual work
-    a1 <- async (head <$> res)
-    a2 <- async (waitBarrier bar)
-    fromEither <$> waitEither a1 a2
+runAction herald ide action = runActionSync herald ide action
 
 
--- | `runActionSync` is similar to `runAction` but it will
--- wait for all rules (so in particular the `ofInterestRule`) to
--- finish running. This is mainly useful in tests, where you want
--- to wait for all rules to fire so you can check diagnostics.
 runActionSync :: String -> IdeState -> Action a -> IO a
 runActionSync herald s act = fmap head $ join $ shakeRunUser herald s [act]
 
