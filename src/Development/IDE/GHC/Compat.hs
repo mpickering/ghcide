@@ -281,8 +281,8 @@ getHeaderImports = Hdr.getImports
 getHeaderImports a b c d =
     catch (Right <$> Hdr.getImports a b c d)
           (return . Left . srcErrorMessages)
-getModuleHash :: ModIface -> Fingerprint
 #endif
+getModuleHash :: ModIface -> Fingerprint
 #if MIN_GHC_API_VERSION(8,10,0)
 getModuleHash = mi_mod_hash . mi_final_exts
 #else
