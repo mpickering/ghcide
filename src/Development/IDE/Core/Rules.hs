@@ -419,7 +419,6 @@ typeCheckRule = define $ \TypeCheck file -> do
     pm <- use_ GetParsedModule file
     -- do not generate interface files as this rule is called
     -- for files of interest on every keystroke
---    delayedAction "Parent" (typeCheckParents file)
     typeCheckRuleDefinition file pm SkipGenerationOfInterfaceFiles
 
 getModuleGraphRule :: Rules ()
@@ -596,6 +595,7 @@ getModIfaceRule = define $ \GetModIface f -> do
           -- Never load interface files for files of interest
           not fileOfInterest
     mbHiFile <- if useHiFile then use GetHiFile f else return Nothing
+    liftIO $ print ("MOD", f)
     case mbHiFile of
         Just x ->
             return ([], Just x)

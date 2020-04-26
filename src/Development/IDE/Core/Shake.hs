@@ -65,6 +65,7 @@ import Data.Traversable (for)
 import Data.Tuple.Extra
 import Data.Unique
 import Development.IDE.Core.Debouncer
+import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Types.Logger hiding (Priority)
 import qualified Development.IDE.Types.Logger as Logger
@@ -427,7 +428,7 @@ getValues state key file = do
 knownFilesIO :: Var Values -> IO (HSet.HashSet NormalizedFilePath)
 knownFilesIO v = do
   vs <- readVar v
-  return $ HSet.map fst (HMap.keysSet vs)
+  return $ HSet.map fst $ HSet.filter (\(_, k) -> k == Key GetModSummary) (HMap.keysSet vs)
 
 knownFiles :: Action (HSet.HashSet NormalizedFilePath)
 knownFiles = do

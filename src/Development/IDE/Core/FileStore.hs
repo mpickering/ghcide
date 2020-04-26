@@ -33,6 +33,7 @@ import Data.HashSet as HS
 import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import qualified Data.Rope.UTF16 as Rope
+import Development.IDE.Import.DependencyInformation
 
 #ifdef mingw32_HOST_OS
 import Data.Time
@@ -187,7 +188,13 @@ setFileModified state nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternalKill "FileStoreTC" state [void (use TypeCheck nfp)] --, void (useNoFile GetModuleGraph)]
+    shakeRunInternalKill "FileStoreTC" state [void (use TypeCheck nfp)
+                                             , typecheckParents nfp ]
+
+typecheckParents :: NormalizedFilePath -> Action ()
+typecheckParents nfp = do
+    revs <- reverseDependencies nfp <$> useNoFile_ GetModuleGraph
+    void $ uses GetModIface revs
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that
