@@ -29,6 +29,7 @@ import           GHC.Generics
 import Data.Either.Extra
 import System.IO.Error
 import qualified Data.ByteString.Char8 as BS
+import Data.HashSet as HS
 import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import qualified Data.Rope.UTF16 as Rope
@@ -186,7 +187,7 @@ setFileModified state nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternal "FileStoreSomething" state [use TypeCheck nfp]
+    shakeRunInternal "FileStoreTC" state [void (use TypeCheck nfp)] --, void (useNoFile GetModuleGraph)]
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that

@@ -25,13 +25,14 @@ module Development.IDE.Core.Shake(
     shakeOpen, shakeShut,
     shakeRun, shakeRunInternal, shakeRunUser,
     shakeProfile,
-    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast,
+    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast, delayedAction,
     use_, useNoFile_, uses_,
     define, defineEarlyCutoff, defineOnDisk, needOnDisk, needOnDisks,
     getDiagnostics, unsafeClearDiagnostics,
     getHiddenDiagnostics,
     IsIdeGlobal, addIdeGlobal, addIdeGlobalExtras, getIdeGlobalState, getIdeGlobalAction,
     garbageCollect,
+    knownFiles,
     setPriority,
     sendEvent,
     ideLogger,
@@ -48,6 +49,7 @@ import           Development.Shake.Database
 import           Development.Shake.Classes
 import           Development.Shake.Rule
 import qualified Data.HashMap.Strict as HMap
+import qualified Data.HashSet as HSet
 import qualified Data.Map.Strict as Map
 import qualified Data.ByteString.Char8 as BS
 import           Data.Dynamic
@@ -282,6 +284,23 @@ getValues state key file = do
             -- and we blow up immediately if the fromJust should fail
             -- (which would be an internal error).
             evaluate (r `seqValue` Just r)
+
+-- Consult the Values hashmap to get a list of all the files we care about
+-- in a project
+-- MP: This may be quite inefficient if the Values table is very big but
+-- simplest implementation first.
+knownFilesIO :: Var Values -> IO (HSet.HashSet NormalizedFilePath)
+knownFilesIO v = do
+  vs <- readVar v
+  return $ HSet.map fst (HMap.keysSet vs)
+
+knownFiles :: Action (HSet.HashSet NormalizedFilePath)
+knownFiles = do
+  ShakeExtras{state} <- getShakeExtras
+  liftIO $ knownFilesIO state
+
+
+
 
 -- | Seq the result stored in the Shake value. This only
 -- evaluates the value to WHNF not NF. We take care of the latter
