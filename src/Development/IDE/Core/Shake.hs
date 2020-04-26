@@ -42,6 +42,8 @@ module Development.IDE.Core.Shake(
     updatePositionMapping, runAction, runActionSync,
     deleteValue,
     OnDiskRule(..),
+
+    IdeAction(..), runIdeAction
     ) where
 
 import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
@@ -88,6 +90,8 @@ import           Numeric.Extra
 import Language.Haskell.LSP.Types
 import Data.Either.Extra
 import Control.Monad.IO.Class
+import Control.Monad.Reader
+import Control.Monad.Writer
 
 
 -- information we stash inside the shakeExtra field
@@ -192,14 +196,20 @@ currentValue Failed = Nothing
 
 -- | Return the most recent, potentially stale, value and a PositionMapping
 -- for the version of that value.
-lastValue :: NormalizedFilePath -> Value v -> Action (Maybe (v, PositionMapping))
-lastValue file v = do
-    ShakeExtras{positionMapping} <- getShakeExtras
+lastValueIO :: ShakeExtras -> NormalizedFilePath -> Value v -> IO (Maybe (v, PositionMapping))
+lastValueIO ShakeExtras{positionMapping} file v = do
     allMappings <- liftIO $ readVar positionMapping
     pure $ case v of
         Succeeded ver v -> Just (v, mappingForVersion allMappings file ver)
         Stale ver v -> Just (v, mappingForVersion allMappings file ver)
         Failed -> Nothing
+
+-- | Return the most recent, potentially stale, value and a PositionMapping
+-- for the version of that value.
+lastValue :: NormalizedFilePath -> Value v -> Action (Maybe (v, PositionMapping))
+lastValue file v = do
+    s <- getShakeExtras
+    liftIO $ lastValueIO s file v
 
 valueVersion :: Value v -> Maybe TextDocumentVersion
 valueVersion = \case
@@ -417,11 +427,11 @@ withMVar' var unmasked masked = mask $ \restore -> do
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
 -- has already finished as is the case with useWithStaleFast
-delayedAction :: String -> Action () -> Action ()
-delayedAction herald a = do
-  s <- getShakeExtras
-  runAfterDB (\db -> do
-    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
+delayedAction :: String -> Action () -> IdeAction ()
+delayedAction herald a = tell [(herald, a)]
+
+--  runAfterDB (\db -> do
+--    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
 
 -- | Running an action which DIRECTLY corresponds to something a user did,
 -- for example computing hover information.
@@ -527,14 +537,25 @@ useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
 
-useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
+newtype IdeAction a = IdeAction { runIdeActionT  :: WriterT [(String, Action ())] (ReaderT IdeState IO) a }
+    deriving (MonadReader IdeState, MonadWriter [(String, Action ())], MonadIO, Functor, Applicative, Monad)
+
+runIdeAction :: String -> IdeState -> IdeAction a -> IO a
+runIdeAction _herald s i = do
+    (res, _ws) <- runReaderT (runWriterT (runIdeActionT i)) s
+    return res
+
+askShake :: IdeAction ShakeExtras
+askShake = shakeExtras <$> ask
+
+useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
 useWithStaleFast key file = do
   final_res <-  do
     -- This lookup directly looks up the key in the shake database and
     -- returns the last value that was computed for this key without
     -- checking freshness.
 
-    ShakeExtras{state} <- getShakeExtras
+    s@ShakeExtras{state} <- askShake
     r <- liftIO $ getValues state key file
     case r of
       Nothing -> do
@@ -545,7 +566,7 @@ useWithStaleFast key file = do
         --useWithStale key file
       -- Otherwise, use the computed value even if it's out of date.
       Just v -> do
-        lastValue file v
+        liftIO $ lastValueIO s file v
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]

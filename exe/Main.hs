@@ -72,6 +72,7 @@ import HscTypes (HscEnv(..), ic_dflags)
 import DynFlags (PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
 import           GHC.Check                      (runTimeVersion, compileTimeVersionFromLibdir)
+import Debug.Trace
 
 import           HIE.Bios.Cradle
 import           HIE.Bios.Types

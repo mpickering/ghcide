@@ -95,7 +95,7 @@ insertPathId path id PathIdMap{..} =
     PathIdMap (IntMap.insert (getFilePathId id) path idToPathMap) (HMS.insert (artifactFilePath path) id pathToIdMap)
 
 insertImport :: FilePathId -> Either ModuleParseError ModuleImports -> RawDependencyInformation -> RawDependencyInformation
-insertImport (FilePathId k) v rawDepInfo = rawDepInfo { rawImports = IntMap.insert k v (rawImports rawDepInfo) }
+insertImport (FilePathId f) v rawDepInfo = rawDepInfo { rawImports = IntMap.insert f v (rawImports rawDepInfo) }
 
 pathToId :: PathIdMap -> NormalizedFilePath -> FilePathId
 pathToId PathIdMap{pathToIdMap} path = pathToIdMap HMS.! path
