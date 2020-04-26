@@ -31,6 +31,10 @@ import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 
 import           Development.IDE.Core.Shake
+import Control.Concurrent
+import Control.Concurrent.Async
+import Control.Monad
+import GHC.Conc
 
 
 
@@ -49,9 +53,9 @@ initialise :: LSP.ClientCapabilities
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> VFSHandle
-           -> IO IdeState
-initialise caps mainRule getLspId toDiags logger debouncer options vfs =
-    shakeOpen
+           -> IO (IdeState, Async ())
+initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
+    ide <- shakeOpen
         getLspId
         toDiags
         logger
@@ -67,6 +71,9 @@ initialise caps mainRule getLspId toDiags logger debouncer options vfs =
             ofInterestRules
             fileExistsRules getLspId caps vfs
             mainRule
+    tid <- async $ forever (workerThread ide)
+    labelThread (asyncThreadId tid) "ShakeWorker"
+    return (ide, tid)
 
 writeProfile :: IdeState -> FilePath -> IO ()
 writeProfile = shakeProfile

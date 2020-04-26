@@ -43,6 +43,7 @@ module Development.IDE.Core.Shake(
     deleteValue,
     OnDiskRule(..),
 
+    workerThread,
     IdeAction(..), runIdeAction
     ) where
 
@@ -241,9 +242,53 @@ data IdeState = IdeState
     {shakeDb :: ShakeDatabase
     ,shakeAbort :: MVar (IO ()) -- close whoever was running last
     ,shakeClose :: IO ()
+    ,shakeQueue :: ShakeQueue
     ,shakeExtras :: ShakeExtras
     ,shakeProfileDir :: Maybe FilePath
     }
+
+-- | Actions we want to run on the shake database are queued up and batched together.
+-- A batch can be killed when a file is modified as we assume it will invalidate it.
+data ShakeQueue = ShakeQueue
+                { qactions :: Chan DelayedAction
+                , qabort :: MVar (IO ())
+                }
+
+data DelayedAction = DelayedAction String Logger.Priority (IO Bool) (Action ())
+
+finishedBarrier :: Barrier a -> IO Bool
+finishedBarrier b = isJust <$> waitBarrierMaybe b
+
+queueAction :: String -> Logger.Priority -> [Action a] -> ShakeQueue -> IO [Barrier a]
+queueAction s p as sq = do
+    (bs, ds) <- unzip <$> mapM (mkDelayedAction s p) as
+    writeList2Chan (qactions sq) ds
+    return bs
+
+mkDelayedAction :: String -> Logger.Priority -> Action a -> IO (Barrier a, DelayedAction)
+mkDelayedAction s p a = do
+    b <- newBarrier
+    let d = DelayedAction s p (finishedBarrier b)
+                  (do r <- a
+                      liftIO $ signalBarrier b r)
+    return (b, d)
+
+
+newShakeQueue :: IO ShakeQueue
+newShakeQueue = do
+    ShakeQueue <$> newChan <*> (newMVar (return ()))
+
+
+-- | A thread which continually reads from the queue running shake actions
+workerThread :: IdeState -> IO ()
+workerThread i@IdeState{shakeQueue=ShakeQueue{..},..} = do
+    DelayedAction s p finished act <- readChan qactions
+    (cancel, wait) <- shakeRun p s i [act]
+    swapMVar qabort cancel
+    _res <- wait
+    swapMVar qabort (return ())
+    return ()
+
 
 
 -- Write a profile of the last action to be completed
@@ -354,6 +399,7 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
                 }
             rules
     shakeDb <- shakeDb
+    shakeQueue <- newShakeQueue
     return IdeState{..}
 
 lspShakeProgress :: Hashable a => IO LSP.LspId -> (LSP.FromServerMessage -> IO ()) -> Var (HMap.HashMap a Int) -> IO ()
@@ -435,13 +481,15 @@ delayedAction herald a = tell [(herald, a)]
 
 -- | Running an action which DIRECTLY corresponds to something a user did,
 -- for example computing hover information.
-shakeRunUser :: String -> IdeState -> [Action a] -> IO (IO [a])
-shakeRunUser s IdeState{..} as = shakeRun Info s shakeExtras as shakeDb
+shakeRunUser :: String -> IdeState -> [Action a] -> IO ([IO a])
+shakeRunUser s ide as = do
+    bs <- queueAction s Info as (shakeQueue ide)
+    return $ map waitBarrier bs
 -- | Running an action which is INTERNAL to shake, for example, a file has
 -- been modified, basically any use of shakeRun which is not blocking (ie
 -- which is not called via runAction).
 shakeRunInternal :: String -> IdeState -> [Action a] -> IO ()
-shakeRunInternal s IdeState{..} as = void $ shakeRun Debug s shakeExtras as shakeDb
+shakeRunInternal s ide as = void $ queueAction s Debug as (shakeQueue ide)
 
 -- | Spawn immediately. If you are already inside a call to shakeRun that will be aborted with an exception.
 shakeRun :: Logger.Priority
@@ -449,8 +497,9 @@ shakeRun :: Logger.Priority
                                 -- Some requests are very internal to shake
                                 -- and don't make much sense to normal
                                 -- users.
-         -> ShakeExtras -> [Action a] -> ShakeDatabase -> IO (IO [a])
-shakeRun p herald ShakeExtras{..} acts db =
+         -> IdeState -> [Action a] -> IO (IO (), IO [a])
+shakeRun p herald IdeState{shakeExtras=ShakeExtras{..},..} acts  =
+    {-
     withMVar'
         abort
         (\stop -> do
@@ -461,16 +510,17 @@ shakeRun p herald ShakeExtras{..} acts db =
         -- It is crucial to be masked here, otherwise we can get killed
         -- between spawning the new thread and updating shakeAbort.
         -- See https://github.com/digital-asset/ghcide/issues/79
+        -}
         (do
               aThread <- asyncWithUnmask $ \restore -> do
                     -- Try to run the action and record how long it took
-                   (runTime, res) <- duration $ try (restore $ shakeRunDatabase db acts)
+                   (runTime, res) <- duration $ try (restore $ shakeRunDatabase shakeDb acts)
 
                    -- Write a profile when the action completed normally
                    profile <- case res of
                      Left {}  -> return ""
                      Right {} -> do
-                      mfp <- forM profileDir (shakeWriteProfile herald db runTime)
+                      mfp <- forM profileDir (shakeWriteProfile herald shakeDb runTime)
                       case mfp of
                         Just fp ->  return $
                           let link = case filePathToUri' $ toNormalizedFilePath' fp of
@@ -542,7 +592,8 @@ newtype IdeAction a = IdeAction { runIdeActionT  :: WriterT [(String, Action ())
 
 runIdeAction :: String -> IdeState -> IdeAction a -> IO a
 runIdeAction _herald s i = do
-    (res, _ws) <- runReaderT (runWriterT (runIdeActionT i)) s
+    (res, ws) <- runReaderT (runWriterT (runIdeActionT i)) s
+    mapM_ (\(herald2, a) -> shakeRunInternal herald2 s [a]) ws
     return res
 
 askShake :: IdeAction ShakeExtras
@@ -582,7 +633,7 @@ runAction herald ide action = runActionSync herald ide action
 
 
 runActionSync :: String -> IdeState -> Action a -> IO a
-runActionSync herald s act = fmap head $ join $ shakeRunUser herald s [act]
+runActionSync herald s act = fmap head $ join $ sequence <$> shakeRunUser herald s [act]
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath
