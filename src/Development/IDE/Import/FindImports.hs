@@ -16,21 +16,20 @@ import           Development.IDE.GHC.Error as ErrUtils
 import Development.IDE.GHC.Orphans()
 import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
+import Development.IDE.GHC.Compat
 -- GHC imports
-import           DynFlags
 import           FastString
-import           GHC
 import qualified Module                      as M
 import           Packages
 import           Outputable                  (showSDoc, ppr, pprPanic)
 import           Finder
 import Control.DeepSeq
+import DriverPhases
 
 -- standard imports
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           System.FilePath
-import DriverPhases
 
 data Import
   = FileImport !ArtifactsLocation
@@ -79,40 +78,53 @@ locateModuleFile import_dirss exts doesExist isSource modName = do
       | isSource = ext ++ "-boot"
       | otherwise = ext
 
+mkImportDirs :: (M.InstalledUnitId, DynFlags) -> (PackageName, [FilePath])
+mkImportDirs (i, df@DynFlags{importPaths}) = (pn , importPaths)
+  where
+    pn = case getPackageName df i of
+           Nothing -> error "very bad"
+           Just n -> n
+
 -- | locate a module in either the file system or the package database. Where we go from *daml to
 -- Haskell
 locateModule
     :: MonadIO m
     => DynFlags
-    -> [[FilePath]] -- Sets import directories to look in
+    -> [(M.InstalledUnitId, DynFlags)] -- Sets import directories to look in
     -> [String]
     -> (NormalizedFilePath -> m Bool)
     -> Located ModuleName
     -> Maybe FastString
     -> Bool
     -> m (Either [FileDiagnostic] Import)
-locateModule dflags import_paths exts doesExist modName mbPkgName isSource = do
+locateModule dflags comp_info exts doesExist modName mbPkgName isSource = do
   case mbPkgName of
     -- "this" means that we should only look in the current package
     Just "this" -> do
-      mbFile <- locateModuleFile [(importPaths dflags)] exts doesExist isSource $ unLoc modName
-      case mbFile of
-        Nothing -> return $ Left $ notFoundErr dflags modName $ LookupNotFound []
-        Just file -> toModLocation file
+      lookupLocal [importPaths dflags]
     -- if a package name is given we only go look for a package
-    Just _pkgName -> lookupInPackageDB dflags
+    Just pkgName
+      | Just dirs <- lookup (PackageName pkgName) import_paths
+          -> lookupLocal [dirs]
+      | otherwise -> lookupInPackageDB dflags
     Nothing -> do
       -- first try to find the module as a file. If we can't find it try to find it in the package
       -- database.
-      mbFile <- locateModuleFile import_paths exts doesExist isSource $ unLoc modName
+      mbFile <- locateModuleFile (map snd import_paths) exts doesExist isSource $ unLoc modName
       case mbFile of
         Nothing -> lookupInPackageDB dflags
         Just file -> toModLocation file
   where
+    import_paths = map mkImportDirs comp_info
     toModLocation file = liftIO $ do
         loc <- mkHomeModLocation dflags (unLoc modName) (fromNormalizedFilePath file)
         return $ Right $ FileImport $ ArtifactsLocation file loc (not isSource)
 
+    lookupLocal dirs = do
+      mbFile <- locateModuleFile dirs exts doesExist isSource $ unLoc modName
+      case mbFile of
+        Nothing -> return $ Left $ notFoundErr dflags modName $ LookupNotFound []
+        Just file -> toModLocation file
 
     lookupInPackageDB dfs =
       case lookupModuleWithSuggestions dfs (unLoc modName) mbPkgName of

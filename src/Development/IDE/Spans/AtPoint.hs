@@ -27,6 +27,7 @@ import Outputable hiding ((<>))
 import SrcLoc
 import Type
 import VarSet
+import Outputable hiding ((<>))
 
 import Control.Monad.Extra
 import Control.Monad.Trans.Maybe
@@ -177,13 +178,17 @@ nameToLocation getHieFile name =
               case nameSrcSpan name of
                 sp@(RealSrcSpan _) -> pure $ Just sp
                 sp@(UnhelpfulSpan _) -> runMaybeT $ do
+                  pprTraceM "Unhelpful" (ppr name)
                   guard (sp /= wiredInSrcSpan)
                   -- This case usually arises when the definition is in an external package.
                   -- In this case the interface files contain garbage source spans
                   -- so we instead read the .hie files to get useful source spans.
                   mod <- MaybeT $ return $ nameModule_maybe name
+                  pprTraceM "Unhelpful:mod" (ppr mod)
                   (hieFile, srcPath) <- getHieFile mod
+                  pprTraceM "Unhelpful:mod" (ppr srcPath)
                   avail <- MaybeT $ pure $ find (eqName name . snd) $ hieExportNames hieFile
+                  pprTraceM "Unhelpful:avail" (ppr avail)
                   -- The location will point to the source file used during compilation.
                   -- This file might no longer exists and even if it does the path will be relative
                   -- to the compilation directory which we don’t know.

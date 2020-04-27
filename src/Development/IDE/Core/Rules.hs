@@ -29,6 +29,7 @@ module Development.IDE.Core.Rules(
     ) where
 
 import Fingerprint
+import Outputable hiding ((<>))
 
 import Data.Binary
 import Util
@@ -145,13 +146,19 @@ getHieFile
   -> Module -- ^ module dep we want info for
   -> MaybeT IdeAction (HieFile, FilePath) -- ^ hie stuff for the module
 getHieFile ide file mod = do
-  TransitiveDependencies {transitiveNamedModuleDeps} <- fst <$> useE GetDependencies file
+  TransitiveDependencies {transitiveModuleDeps, transitiveNamedModuleDeps} <- fst <$> useE GetDependencies file
   case find (\x -> nmdModuleName x == moduleName mod) transitiveNamedModuleDeps of
     Just NamedModuleDep{nmdFilePath=nfp} -> do
+        pprTraceM "found" (text (show transitiveNamedModuleDeps))
         let modPath = fromNormalizedFilePath nfp
         hieFile <- getHomeHieFile nfp
         return $ (hieFile, modPath)
-    _ -> getPackageHieFile ide mod file
+    _ -> do
+      pprTraceM "not-found" (text (show transitiveNamedModuleDeps)
+                             $$ text (show transitiveModuleDeps)
+                             $$ text (show mod)
+                             )
+      getPackageHieFile ide mod file
 
 
 getHomeHieFile :: NormalizedFilePath -> MaybeT IdeAction HieFile
@@ -167,8 +174,8 @@ getHomeHieFile f = do
         | otherwise = False
 
   -- Delayed action
---  unless isUpToDate $
---       void $ useE TypeCheck f
+  unless isUpToDate $
+    lift $ delayedAction "OutOfDateHie" (void $ use TypeCheck f)
 
   hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
   MaybeT $ return hf
@@ -257,7 +264,7 @@ getLocatedImportsRule =
         let imports = [(False, imp) | imp <- ms_textual_imps ms] ++ [(True, imp) | imp <- ms_srcimps ms]
         env_eq <- use_ GhcSession file
         let env = hscEnv env_eq
-        let import_dirs = map (importPaths . snd ) (deps env_eq)
+        let import_dirs = deps env_eq
         let dflags = addRelativeImport file (moduleName $ ms_mod ms) $ hsc_dflags env
         opt <- getIdeOptions
         (diags, imports') <- fmap unzip $ forM imports $ \(isSource, (mbPkgName, modName)) -> do
@@ -274,6 +281,7 @@ getLocatedImportsRule =
         case sequence pkgImports of
             Nothing -> pure (concat diags, Nothing)
             Just pkgImports -> pure (concat diags, Just (moduleImports, Set.fromList $ concat pkgImports))
+
 
 -- | Given a target file path, construct the raw dependency results by following
 -- imports recursively.
@@ -342,6 +350,7 @@ getDependencyInformationRule :: Rules ()
 getDependencyInformationRule =
     define $ \GetDependencyInformation file -> do
        rawDepInfo <- rawDependencyInformation [file]
+       liftIO $ print $ rawDepInfo
        pure ([], Just $ processDependencyInformation rawDepInfo)
 
 reportImportCyclesRule :: Rules ()
