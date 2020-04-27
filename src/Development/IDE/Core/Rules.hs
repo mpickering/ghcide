@@ -564,7 +564,9 @@ getHiFileRule = defineEarlyCutoff $ \GetHiFile f -> do
         else do
           hiVersion  <- use_ GetModificationTime hiFile
           modVersion <- use_ GetModificationTime f
-          let sourceModified = modificationTime hiVersion < modificationTime modVersion
+          -- This used to not detect changes to unsaved files correct so it's
+          -- important to use newerFileVersion
+          let sourceModified = newerFileVersion modVersion hiVersion
           if sourceModified
             then do
               let d = mkInterfaceFilesGenerationDiag f "Stale interface file"
@@ -595,7 +597,6 @@ getModIfaceRule = define $ \GetModIface f -> do
           -- Never load interface files for files of interest
           not fileOfInterest
     mbHiFile <- if useHiFile then use GetHiFile f else return Nothing
-    liftIO $ print ("MOD", f)
     case mbHiFile of
         Just x ->
             return ([], Just x)

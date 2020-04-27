@@ -316,7 +316,14 @@ partitionSCC []                  = ([], [])
 reverseDependencies :: NormalizedFilePath -> DependencyInformation -> [NormalizedFilePath]
 reverseDependencies file DependencyInformation{..} =
   let FilePathId cur_id = pathToId depPathIdMap file
-  in map (idToPath depPathIdMap . FilePathId) (IntSet.toList (fromMaybe IntSet.empty $ IntMap.lookup cur_id depReverseModuleDeps))
+  in map (idToPath depPathIdMap . FilePathId) (IntSet.toList (go cur_id IntSet.empty))
+  where
+    go :: Int -> IntSet -> IntSet
+    go k i =
+      let outwards = fromMaybe IntSet.empty (IntMap.lookup k depReverseModuleDeps  )
+          res = IntSet.union i outwards
+          new = IntSet.difference i outwards
+      in IntSet.foldr go res new
 
 transitiveDeps :: DependencyInformation -> NormalizedFilePath -> Maybe TransitiveDependencies
 transitiveDeps DependencyInformation{..} file = do

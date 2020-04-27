@@ -189,11 +189,12 @@ setFileModified state nfp = do
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
     shakeRunInternalKill "FileStoreTC" state [void (use TypeCheck nfp)
-                                             , typecheckParents nfp ]
+                                             , delay "Propagate" (typecheckParents nfp) ]
 
 typecheckParents :: NormalizedFilePath -> Action ()
 typecheckParents nfp = do
     revs <- reverseDependencies nfp <$> useNoFile_ GetModuleGraph
+    liftIO $ print (length revs)
     void $ uses GetModIface revs
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
