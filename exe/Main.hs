@@ -113,7 +113,7 @@ main = do
 
     dir <- IO.getCurrentDirectory
 
-    let plugins = Completions.plugin -- <> CodeAction.plugin
+    let plugins = Completions.plugin <> CodeAction.plugin
         onInitialConfiguration = const $ Right ()
         onConfigurationChange  = const $ Right ()
         options = def { LSP.executeCommandCommands = Just ["typesignature.add"]
