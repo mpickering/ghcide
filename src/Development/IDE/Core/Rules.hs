@@ -72,6 +72,7 @@ import Development.IDE.Core.PositionMapping
 
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
+import PackageConfig
 import DynFlags (gopt_set, xopt)
 import GHC.Generics(Generic)
 
@@ -82,7 +83,11 @@ import Development.Shake.Classes
 import Control.Monad.Trans.Except (runExceptT)
 import Data.ByteString (ByteString)
 import Control.Concurrent.Async (concurrently)
+import Control.Concurrent.Extra
+import System.Time.Extra
 import Control.Monad.Reader
+import System.Directory ( getModificationTime )
+import Control.Exception
 
 -- | This is useful for rules to convert rules that can only produce errors or
 -- a result into the more general IdeResult type that supports producing
@@ -146,18 +151,15 @@ getHieFile
   -> Module -- ^ module dep we want info for
   -> MaybeT IdeAction (HieFile, FilePath) -- ^ hie stuff for the module
 getHieFile ide file mod = do
-  TransitiveDependencies {transitiveModuleDeps, transitiveNamedModuleDeps} <- fst <$> useE GetDependencies file
+  TransitiveDependencies {transitiveNamedModuleDeps} <- fst <$> useE GetDependencies file
   case find (\x -> nmdModuleName x == moduleName mod) transitiveNamedModuleDeps of
     Just NamedModuleDep{nmdFilePath=nfp} -> do
-        pprTraceM "found" (text (show transitiveNamedModuleDeps))
+        pprTraceM "found" (text (show nfp))
         let modPath = fromNormalizedFilePath nfp
         hieFile <- getHomeHieFile nfp
         return $ (hieFile, modPath)
     _ -> do
-      pprTraceM "not-found" (text (show transitiveNamedModuleDeps)
-                             $$ text (show transitiveModuleDeps)
-                             $$ text (show mod)
-                             )
+      pprTraceM "not-found" (text (show mod))
       getPackageHieFile ide mod file
 
 
@@ -166,19 +168,26 @@ getHomeHieFile f = do
   ms <- fst <$> useE GetModSummary f
   let normal_hie_f = toNormalizedFilePath' hie_f
       hie_f = ml_hie_file $ ms_location ms
-  mbHieTimestamp <- lift (runMaybeT (useE GetModificationTime normal_hie_f))
-  srcTimestamp   <- fst <$> useE GetModificationTime f
-
+  mbHieTimestamp <- either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime hie_f)
+  srcTimestamp   <- MaybeT (either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime $ fromNormalizedFilePath f))
+  liftIO $ print (mbHieTimestamp, srcTimestamp, hie_f, normal_hie_f)
   let isUpToDate
-        | Just d <- mbHieTimestamp = comparing modificationTime (fst d) srcTimestamp == GT
+        | Just d <- mbHieTimestamp = d > srcTimestamp
         | otherwise = False
 
-  -- Delayed action
-  unless isUpToDate $
-    lift $ delayedAction "OutOfDateHie" (void $ use TypeCheck f)
+  if isUpToDate
+    then do
+      hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
+      MaybeT $ return hf
+    else do
+      -- Could block here with a barrier rather than fail
+      b <- liftIO $ newBarrier
+      lift $ delayedAction "OutOfDateHie" (do pm <- use_ GetParsedModule f
+                                              typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
+                                              (liftIO $ signalBarrier b ()))
+      () <- MaybeT $ liftIO $ timeout 1 $ waitBarrier b
+      liftIO $ loadHieFile hie_f
 
-  hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
-  MaybeT $ return hf
 
 getPackageHieFile :: IdeState
                   -> Module             -- ^ Package Module to load .hie file for
@@ -220,12 +229,16 @@ priorityFilesOfInterest = Priority (-2)
 
 getParsedModuleRule :: Rules ()
 getParsedModuleRule = defineEarlyCutoff $ \GetParsedModule file -> do
-    hsc <- hscEnv <$> use_ GhcSession file
+    sess <- use_ GhcSession file
+    let hsc = hscEnv sess
+        -- After parsing the module remove all package imports referring to
+        -- these packages as we have already dealt with what they map to.
+        comp_pkgs = map (fst . mkImportDirs) (deps sess)
     opt <- getIdeOptions
     (_, contents) <- getFileContents file
 
     let dflags    = hsc_dflags hsc
-        mainParse = getParsedModuleDefinition hsc opt file contents
+        mainParse = getParsedModuleDefinition hsc opt comp_pkgs file contents
 
     -- Parse again (if necessary) to capture Haddock parse errors
     if gopt Opt_Haddock dflags
@@ -235,7 +248,7 @@ getParsedModuleRule = defineEarlyCutoff $ \GetParsedModule file -> do
             let hscHaddock = hsc{hsc_dflags = gopt_set dflags Opt_Haddock}
                 haddockParse = do
                     (_, (!diagsHaddock, _)) <-
-                        getParsedModuleDefinition hscHaddock opt file contents
+                        getParsedModuleDefinition hscHaddock opt comp_pkgs file contents
                     return diagsHaddock
 
             ((fingerPrint, (diags, res)), diagsHaddock) <-
@@ -246,9 +259,9 @@ getParsedModuleRule = defineEarlyCutoff $ \GetParsedModule file -> do
 
             return (fingerPrint, (mergeDiagnostics diags diagsHaddock, res))
 
-getParsedModuleDefinition :: HscEnv -> IdeOptions -> NormalizedFilePath -> Maybe T.Text -> IO (Maybe ByteString, ([FileDiagnostic], Maybe ParsedModule))
-getParsedModuleDefinition packageState opt file contents = do
-    (diag, res) <- parseModule opt packageState (fromNormalizedFilePath file) (fmap textToStringBuffer contents)
+getParsedModuleDefinition :: HscEnv -> IdeOptions -> [PackageName] -> NormalizedFilePath -> Maybe T.Text -> IO (Maybe ByteString, ([FileDiagnostic], Maybe ParsedModule))
+getParsedModuleDefinition packageState opt comp_pkgs file contents = do
+    (diag, res) <- parseModule opt packageState comp_pkgs (fromNormalizedFilePath file) (fmap textToStringBuffer contents)
     case res of
         Nothing -> pure (Nothing, (diag, Nothing))
         Just (contents, modu) -> do
@@ -350,7 +363,6 @@ getDependencyInformationRule :: Rules ()
 getDependencyInformationRule =
     define $ \GetDependencyInformation file -> do
        rawDepInfo <- rawDependencyInformation [file]
-       liftIO $ print $ rawDepInfo
        pure ([], Just $ processDependencyInformation rawDepInfo)
 
 reportImportCyclesRule :: Rules ()
@@ -618,12 +630,16 @@ getModIfaceRule = define $ \GetModIface f -> do
             -- the interface file does not exist or is out of date.
             -- Invoke typechecking directly to update it without incurring a dependency
             -- on the parsed module and the typecheck rules
-            hsc <- hscEnv <$> use_ GhcSession f
+            sess <- use_ GhcSession f
+            let hsc = hscEnv sess
+                -- After parsing the module remove all package imports referring to
+                -- these packages as we have already dealt with what they map to.
+                comp_pkgs = map (fst . mkImportDirs) (deps sess)
             opt <- getIdeOptions
             (_, contents) <- getFileContents f
             -- Embed --haddocks in the interface file
             hsc <- pure hsc{hsc_dflags = gopt_set (hsc_dflags hsc) Opt_Haddock}
-            (_, (diags, mb_pm)) <- liftIO $ getParsedModuleDefinition hsc opt f contents
+            (_, (diags, mb_pm)) <- liftIO $ getParsedModuleDefinition hsc opt comp_pkgs f contents
             case mb_pm of
                 Nothing -> return (diags, Nothing)
                 Just pm -> do

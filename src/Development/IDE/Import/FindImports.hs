@@ -10,6 +10,7 @@ module Development.IDE.Import.FindImports
   , ArtifactsLocation(..)
   , modSummaryToArtifactsLocation
   , isBootLocation
+  , mkImportDirs
   ) where
 
 import           Development.IDE.GHC.Error as ErrUtils
@@ -30,6 +31,7 @@ import DriverPhases
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           System.FilePath
+import Outputable
 
 data Import
   = FileImport !ArtifactsLocation
