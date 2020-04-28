@@ -188,7 +188,7 @@ setFileModified state nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternalKill "FileStoreTC" state [void (use TypeCheck nfp)
+    shakeRunInternalKill "FileStoreTC" state [void (use GetSpanInfo nfp)
                                              , delay "Propagate" (typecheckParents nfp) ]
 
 typecheckParents :: NormalizedFilePath -> Action ()
