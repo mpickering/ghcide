@@ -95,6 +95,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Writer
 import qualified Data.HashPSQ as PQ
+import Debug.Trace
 
 
 -- information we stash inside the shakeExtra field
@@ -351,8 +352,8 @@ smallestK n p = case PQ.minView p of
 -- | A thread which continually reads from the queue running shake actions
 workerThread :: IdeState -> IO ()
 workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
-    -- I choose 5 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
-    ds <- modifyVar qactions (return . smallestK 5)
+    -- I choose 20 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
+    ds <- modifyVar qactions (return . smallestK 500)
     case ds of
         [] -> takeMVar qTrigger
         _ -> do
@@ -408,6 +409,8 @@ setValues :: IdeRule k v
           -> IO ()
 setValues state key file val = modifyVar_ state $ \vals -> do
     -- Force to make sure the old HashMap is not retained
+    --let size = HMap.size vals
+    --traceEventIO ("METRIC:" ++ show size)
     evaluate $ HMap.insert (file, Key key) (fmap toDyn val) vals
 
 -- | Delete the value stored for a given ide build key
