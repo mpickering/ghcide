@@ -1,0 +1,39 @@
+#!/usr/bin/env cabal
+{- cabal:
+build-depends: base, lsp-test, text
+-}
+import Language.Haskell.LSP.Test
+import Language.Haskell.LSP.Types
+import Control.Monad
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Control.Concurrent
+import Control.Monad.IO.Class
+
+conf = defaultConfig { logMessages = False, logStdErr = True }
+
+main = do
+  runSessionWithConfig conf ("/home/matt/ghcide-clean/ghcide-wrapper") fullCaps "." $ do
+    TextDocumentIdentifier uri <- openDoc "src/Development/IDE/Core/Shake.hs" "haskell"
+    liftIO $ threadDelay  10000000
+    waitForDiagnostics
+    forM_ [0..100000] $ \i -> do
+      let s = T.pack ("f" ++ show i ++ " = ()\n")
+      let doc = VersionedTextDocumentIdentifier uri (Just i)
+      liftIO $ print s
+      t <- documentContents (TextDocumentIdentifier uri)
+      --liftIO $ T.writeFile "/tmp/current_doc" t
+
+      sendNotification TextDocumentDidChange
+        (DidChangeTextDocumentParams doc
+          (List [TextDocumentContentChangeEvent
+                  (Just (Range (Position 441 0) (Position 441 0)))
+                  Nothing
+                  s ]))
+      when (i `mod` 30 == 0) (do
+        -- Wait every 10 requests to simulate typing
+        sendNotification TextDocumentDidSave (DidSaveTextDocumentParams (TextDocumentIdentifier uri))
+        liftIO $ threadDelay  1000000)
+      waitForDiagnostics
+
+
