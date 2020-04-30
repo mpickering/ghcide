@@ -81,7 +81,11 @@ import Development.Shake.Classes
 import Control.Monad.Trans.Except (runExceptT)
 import Data.ByteString (ByteString)
 import Control.Concurrent.Async (concurrently)
+import Control.Concurrent.Extra
+import System.Time.Extra
 import Control.Monad.Reader
+import System.Directory ( getModificationTime )
+import Control.Exception
 
 -- | This is useful for rules to convert rules that can only produce errors or
 -- a result into the more general IdeResult type that supports producing
@@ -159,15 +163,26 @@ getHomeHieFile f = do
   ms <- fst <$> useE GetModSummary f
   let normal_hie_f = toNormalizedFilePath' hie_f
       hie_f = ml_hie_file $ ms_location ms
-  mbHieTimestamp <- lift (runMaybeT (useE GetModificationTime normal_hie_f))
-  srcTimestamp   <- fst <$> useE GetModificationTime f
+
+  mbHieTimestamp <- either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime hie_f)
+  srcTimestamp   <- MaybeT (either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime $ fromNormalizedFilePath f))
+  liftIO $ print (mbHieTimestamp, srcTimestamp, hie_f, normal_hie_f)
   let isUpToDate
-        | Just d <- mbHieTimestamp = comparing modificationTime (fst d) srcTimestamp == GT
+        | Just d <- mbHieTimestamp = d > srcTimestamp
         | otherwise = False
 
-  -- Delayed action
---  unless isUpToDate $
---       void $ useE TypeCheck f
+  if isUpToDate
+    then do
+      hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
+      MaybeT $ return hf
+    else do
+      -- Could block here with a barrier rather than fail
+      b <- liftIO $ newBarrier
+      lift $ delayedAction "OutOfDateHie" (do pm <- use_ GetParsedModule f
+                                              typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
+                                              (liftIO $ signalBarrier b ()))
+      () <- MaybeT $ liftIO $ timeout 1 $ waitBarrier b
+      liftIO $ loadHieFile hie_f
 
   hf <- liftIO $ whenMaybe isUpToDate (loadHieFile hie_f)
   return ([], hf)
