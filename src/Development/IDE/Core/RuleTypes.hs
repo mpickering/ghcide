@@ -45,6 +45,8 @@ type instance RuleResult GetDependencyInformation = DependencyInformation
 -- This rule is also responsible for calling ReportImportCycles for each file in the transitive closure.
 type instance RuleResult GetDependencies = TransitiveDependencies
 
+type instance RuleResult GetModuleGraph = DependencyInformation
+
 -- | Contains the typechecked module and the OrigNameCache entry for
 -- that module.
 data TcModuleResult = TcModuleResult
@@ -92,7 +94,6 @@ type instance RuleResult GhcSession = HscEnvEq
 -- in the same package or the package id of another package.
 type instance RuleResult GetLocatedImports = ([(Located ModuleName, Maybe ArtifactsLocation)], S.Set InstalledUnitId)
 
--- | This rule is used to report import cycles. It depends on GetDependencyInformation.
 -- We cannot report the cycles directly from GetDependencyInformation since
 -- we can only report diagnostics for the current file.
 type instance RuleResult ReportImportCycles = ()
@@ -126,6 +127,12 @@ data GetDependencyInformation = GetDependencyInformation
 instance Hashable GetDependencyInformation
 instance NFData   GetDependencyInformation
 instance Binary   GetDependencyInformation
+
+data GetModuleGraph = GetModuleGraph
+    deriving (Eq, Show, Typeable, Generic)
+instance Hashable GetModuleGraph
+instance NFData   GetModuleGraph
+instance Binary   GetModuleGraph
 
 data ReportImportCycles = ReportImportCycles
     deriving (Eq, Show, Typeable, Generic)

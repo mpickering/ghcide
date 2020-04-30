@@ -25,24 +25,25 @@ module Development.IDE.Core.Shake(
     shakeOpen, shakeShut,
     shakeRun, shakeRunInternal, shakeRunInternalKill, shakeRunUser,
     shakeProfile,
-    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast,
+    use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast, delayedAction,
     use_, useNoFile_, uses_,
     define, defineEarlyCutoff, defineOnDisk, needOnDisk, needOnDisks,
     getDiagnostics, unsafeClearDiagnostics,
     getHiddenDiagnostics,
     IsIdeGlobal, addIdeGlobal, addIdeGlobalExtras, getIdeGlobalState, getIdeGlobalAction,
     garbageCollect,
+    knownFiles,
     setPriority,
     sendEvent,
     ideLogger,
     actionLogger,
-    FileVersion(..), modificationTime,
+    FileVersion(..), modificationTime, newerFileVersion,
     Priority(..),
     updatePositionMapping, runAction, runActionSync,
     deleteValue,
     OnDiskRule(..),
 
-    workerThread,
+    workerThread, delay,
     IdeAction(..), runIdeAction
     ) where
 
@@ -51,6 +52,7 @@ import           Development.Shake.Database
 import           Development.Shake.Classes
 import           Development.Shake.Rule
 import qualified Data.HashMap.Strict as HMap
+import qualified Data.HashSet as HSet
 import qualified Data.Map.Strict as Map
 import qualified Data.ByteString.Char8 as BS
 import           Data.Dynamic
@@ -63,6 +65,7 @@ import Data.Traversable (for)
 import Data.Tuple.Extra
 import Data.Unique
 import Development.IDE.Core.Debouncer
+import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Types.Logger hiding (Priority)
 import qualified Development.IDE.Types.Logger as Logger
@@ -111,8 +114,7 @@ data ShakeExtras = ShakeExtras
     -- positions in a version of that document to positions in the latest version
     ,inProgress :: Var (HMap.HashMap NormalizedFilePath Int)
     -- ^ How many rules are running for each file
-    , abort :: MVar (IO ())
-    , profileDir :: Maybe FilePath
+    , queue :: ShakeQueue
     }
 
 getShakeExtras :: Action ShakeExtras
@@ -429,6 +431,23 @@ getValues state key file = do
             -- (which would be an internal error).
             evaluate (r `seqValue` Just r)
 
+-- Consult the Values hashmap to get a list of all the files we care about
+-- in a project
+-- MP: This may be quite inefficient if the Values table is very big but
+-- simplest implementation first.
+knownFilesIO :: Var Values -> IO (HSet.HashSet NormalizedFilePath)
+knownFilesIO v = do
+  vs <- readVar v
+  return $ HSet.map fst $ HSet.filter (\(_, k) -> k == Key GetHiFile) (HMap.keysSet vs)
+
+knownFiles :: Action (HSet.HashSet NormalizedFilePath)
+knownFiles = do
+  ShakeExtras{state} <- getShakeExtras
+  liftIO $ knownFilesIO state
+
+
+
+
 -- | Seq the result stored in the Shake value. This only
 -- evaluates the value to WHNF not NF. We take care of the latter
 -- elsewhere and doing it twice is expensive.
@@ -451,6 +470,7 @@ shakeOpen :: IO LSP.LspId
 shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) opts rules = do
     inProgress <- newVar HMap.empty
     shakeAbort <- newMVar $ return ()
+    shakeQueue <- newShakeQueue
     shakeExtras <- do
         globals <- newVar HMap.empty
         state <- newVar HMap.empty
@@ -458,8 +478,7 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
         hiddenDiagnostics <- newVar mempty
         publishedDiagnostics <- newVar mempty
         positionMapping <- newVar HMap.empty
-        let abort = shakeAbort
-        let profileDir = shakeProfileDir
+        let queue = shakeQueue
         pure ShakeExtras{..}
     (shakeDb, shakeClose) <-
         shakeOpenDatabase
@@ -471,7 +490,6 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
                 }
             rules
     shakeDb <- shakeDb
-    shakeQueue <- newShakeQueue
     return IdeState{..}
 
 lspShakeProgress :: Hashable a => IO LSP.LspId -> (LSP.FromServerMessage -> IO ()) -> Var (HMap.HashMap a Int) -> IO ()
@@ -547,6 +565,14 @@ withMVar' var unmasked masked = mask $ \restore -> do
 -- has already finished as is the case with useWithStaleFast
 delayedAction :: String -> Action () -> IdeAction ()
 delayedAction herald a = tell [(herald, a)]
+
+-- | A varient of delayedAction for the Action monad
+-- The supplied action *will* be run but at least not until the current action has finished.
+delay :: String -> Action () -> Action ()
+delay herald a = do
+    ShakeExtras{queue} <- getShakeExtras
+    -- Do not wait for the action to return
+    void $ liftIO $ queueAction herald Info [a] queue
 
 --  runAfterDB (\db -> do
 --    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
@@ -1020,6 +1046,12 @@ instance NFData FileVersion
 vfsVersion :: FileVersion -> Maybe Int
 vfsVersion (VFSVersion i) = Just i
 vfsVersion ModificationTime{} = Nothing
+
+-- | A comparision function where any VFS version is newer than an ondisk version
+newerFileVersion :: FileVersion -> FileVersion -> Bool
+newerFileVersion (VFSVersion i) (VFSVersion j) = i > j
+newerFileVersion (VFSVersion {}) (ModificationTime {}) = True
+newerFileVersion m1 m2 = modificationTime m1 > modificationTime m2
 
 modificationTime :: FileVersion -> Maybe (Int, Int)
 modificationTime VFSVersion{} = Nothing

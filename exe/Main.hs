@@ -357,7 +357,7 @@ loadSession dir = liftIO $ do
         modifyVar_ fileToFlags $ \var -> do
             pure $ Map.insert hieYaml (HM.fromList (cs ++ cached_targets)) var
 
-        return res
+        return (cs, res)
 
     lock <- newLock
 
@@ -381,7 +381,7 @@ loadSession dir = liftIO $ do
         case HM.lookup (toNormalizedFilePath' cfp) v of
             Just opts -> do
                 --putStrLn $ "Cached component of " <> show file
-                pure (fst opts)
+                pure ([], fst opts)
             Nothing-> do
                 finished_barrier <- newBarrier
                 -- fork a new thread here which won't be killed by shake
@@ -391,8 +391,8 @@ loadSession dir = liftIO $ do
                   cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
                   opts <- cradleToSessionOpts cradle cfp
                   print opts
-                  res <- fst <$> session (hieYaml, toNormalizedFilePath' cfp, opts)
-                  signalBarrier finished_barrier res
+                  (cs, res)<- session (hieYaml, toNormalizedFilePath' cfp, opts)
+                  signalBarrier finished_barrier (cs, fst res)
                 waitBarrier finished_barrier
 
     dummyAs <- async $ return (error "Uninitialised")
@@ -403,18 +403,30 @@ loadSession dir = liftIO $ do
             hieYaml <- cradleLoc file
             sessionOpts (hieYaml, file)
     -- The lock is on the `runningCradle` resource
-    return $ \file -> liftIO $ withLock lock $ do
-        as <- readIORef runningCradle
-        finished <- poll as
-        case finished of
-            Just {} -> do
-                as <- async $ getOptions file
-                writeIORef runningCradle as
-                wait as
-             -- If it's not finished then wait and then get options, this could of course be killed still
-            Nothing -> do
-                _ <- wait as
-                getOptions file
+    return $ \file -> do
+      (cs, opts) <-
+        liftIO $ withLock lock $ do
+          as <- readIORef runningCradle
+          finished <- poll as
+          case finished of
+              Just {} -> do
+                  as <- async $ getOptions file
+                  writeIORef runningCradle as
+                  wait as
+              -- If it's not finished then wait and then get options, this could of course be killed still
+              Nothing -> do
+                  _ <- wait as
+                  getOptions file
+      let cfps = map fst cs
+      -- Delayed to avoid recursion and only run if something changed.
+      unless (null cs) (
+        delay "InitialLoad" $ void $ do
+          cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) cfps
+          mmt <- uses GetModificationTime cfps'
+          let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
+          uses GetModIface cs_exist)
+      return opts
+
 
 
 
