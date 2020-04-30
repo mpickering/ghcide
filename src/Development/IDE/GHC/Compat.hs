@@ -26,6 +26,7 @@ module Development.IDE.GHC.Compat(
     includePathsQuote,
     addIncludePathsQuote,
     getModuleHash,
+    getPackageName,
     pattern DerivD,
     pattern ForD,
     pattern InstD,
@@ -46,6 +47,7 @@ import DynFlags
 import FieldLabel
 import Fingerprint (Fingerprint)
 import qualified Module
+import Packages
 
 import qualified GHC
 import GHC hiding (ClassOpSig, DerivD, ForD, IEThingAll, IEThingWith, InstD, TyClD, ValD, ModLocation)
@@ -288,3 +290,12 @@ getModuleHash = mi_mod_hash . mi_final_exts
 #else
 getModuleHash = mi_mod_hash
 #endif
+
+
+getPackageName :: DynFlags -> Module.InstalledUnitId -> Maybe PackageName
+#if MIN_GHC_API_VERSION(8,10,0)
+getPackageName dfs i = getPackageName <$> lookupPackage dfs (DefUnitId i)
+#else
+getPackageName dfs i = packageName <$> lookupPackage dfs (Module.DefiniteUnitId (Module.DefUnitId i))
+#endif
+
