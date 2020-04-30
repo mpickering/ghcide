@@ -293,9 +293,5 @@ getModuleHash = mi_mod_hash
 
 
 getPackageName :: DynFlags -> Module.InstalledUnitId -> Maybe PackageName
-#if MIN_GHC_API_VERSION(8,10,0)
-getPackageName dfs i = getPackageName <$> lookupPackage dfs (DefUnitId i)
-#else
 getPackageName dfs i = packageName <$> lookupPackage dfs (Module.DefiniteUnitId (Module.DefUnitId i))
-#endif
 

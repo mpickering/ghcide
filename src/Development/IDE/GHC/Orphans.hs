@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 -- | Orphan instances for GHC.
@@ -52,8 +53,10 @@ instance Show ParsedModule where
 instance NFData ModSummary where
     rnf = rwhnf
 
+#if __GLASGOW_HASKELL__ < 810
 instance NFData FastString where
     rnf = rwhnf
+#endif
 
 instance NFData ParsedModule where
     rnf = rwhnf
