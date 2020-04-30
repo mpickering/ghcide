@@ -184,13 +184,21 @@ setBufferModified state absFile contents = do
 
 -- | Note that some buffer for a specific file has been modified but not
 -- with what changes.
-setFileModified :: IdeState -> NormalizedFilePath -> IO ()
-setFileModified state nfp = do
+setFileModified :: IdeState
+                -> Bool -- True indicates that we should also attempt to recompile
+                        -- modules which depended on this file. Currently
+                        -- it is true when saving but not on normal
+                        -- document modification events
+                -> NormalizedFilePath
+                -> IO ()
+setFileModified state prop nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternalKill "FileStoreTC" state [void (use GetSpanInfo nfp)
-                                             , delay "Propagate" (typecheckParents nfp) ]
+    shakeRunInternalKill "FileStoreTC" state
+      ([void (use GetSpanInfo nfp)]
+        ++ [typecheckParents nfp | prop])
+
 
 typecheckParents :: NormalizedFilePath -> Action ()
 typecheckParents nfp = do
