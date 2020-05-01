@@ -92,11 +92,11 @@ import           GHC.Generics
 import           System.IO.Unsafe
 import           Numeric.Extra
 import Language.Haskell.LSP.Types
-import Data.Either.Extra
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Writer
 import qualified Data.HashPSQ as PQ
+import OpenTelemetry.Eventlog
 import Debug.Trace
 
 
@@ -383,7 +383,8 @@ requeueIfCancelled sq d@(DelayedActionInternal{..}) = do
 logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
 logDelayedAction l d  = do
     start <- liftIO $ offsetTime
-    getAction d
+    -- These traces go to the eventlog and can be interpreted with the opentelemetry library.
+    actionBracket (beginSpan (show $ actionKey d)) (const $ endSpan) (const $ getAction d)
     runTime <- liftIO $ start
     return ()
     liftIO $ logPriority l (actionPriority d) $ T.pack $

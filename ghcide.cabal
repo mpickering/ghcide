@@ -64,7 +64,8 @@ library
         unordered-containers >= 0.2.10.0,
         utf8-string,
         hslogger,
-        psqueues
+        psqueues,
+        opentelemetry
     if flag(ghc-lib)
       build-depends:
         ghc-lib >= 8.8,
@@ -176,6 +177,7 @@ executable ghcide
     ghc-options:
                 -threaded
                 -Wall
+                -eventlog
                 -Wno-name-shadowing
                 -- allow user RTS overrides
                 -rtsopts
