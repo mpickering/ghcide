@@ -31,7 +31,6 @@ import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 
 import           Development.IDE.Core.Shake
-import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Monad
 import GHC.Conc

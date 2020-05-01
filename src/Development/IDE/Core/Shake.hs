@@ -63,7 +63,6 @@ import Data.Map.Strict (Map)
 import           Data.List.Extra (foldl', partition, takeEnd)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Data.Traversable (for)
 import Data.Tuple.Extra
 import Data.Unique
 import Development.IDE.Core.Debouncer
@@ -97,7 +96,6 @@ import Control.Monad.Reader
 import Control.Monad.Writer
 import qualified Data.HashPSQ as PQ
 import OpenTelemetry.Eventlog
-import Debug.Trace
 
 
 -- information we stash inside the shakeExtra field
@@ -254,21 +252,21 @@ data IdeState = IdeState
     }
 
 
-data QPriority = QPriority { retries :: Int
-                           , qid :: Int
-                           , qimportant :: Bool } deriving Eq
+data QPriority = QPriority { _retries :: Int
+                           , _qid :: Int
+                           , _qimportant :: Bool } deriving Eq
 
 instance Ord QPriority where
     compare (QPriority r q i) (QPriority r' q' i') = compare i i' <> compare r r' <> compare q q'
 
-
+-- A hashable Key with an integer to provide an Ord instance for use as a key in a priority queue.
 data KeyWithId = KeyWithId Key Int deriving (Eq)
 
 instance Hashable KeyWithId where
   hashWithSalt salt (KeyWithId k _) = hashWithSalt salt k
 
 instance Ord KeyWithId where
-    compare (KeyWithId h1 i1) (KeyWithId h2 i2) = i1 `compare` i2
+    compare (KeyWithId _h1 i1) (KeyWithId _h2 i2) = i1 `compare` i2
 
 
 type PriorityMap =  PQ.HashPSQ KeyWithId QPriority DelayedActionInternal
@@ -291,10 +289,10 @@ data ShakeQueue = ShakeQueue
 
 -- This is stuff we make up and add onto the information the user
 -- provided.
-data DelayedActionExtra = DelayedActionExtra { actionInternalId :: Int
-                                             , actionInternalQPriority :: QPriority
-                                             , actionInternalFinished :: IO Bool
-                                             , actionInternal :: Action ()
+data DelayedActionExtra = DelayedActionExtra { _actionInternalId :: Int
+                                             , _actionInternalQPriority :: QPriority
+                                             , _actionInternalFinished :: IO Bool
+                                             , _actionInternal :: Action ()
                                              }
 
 type DelayedAction a = DelayedActionX (Action a)
@@ -320,7 +318,7 @@ data DelayedActionX a = DelayedActionX { actionName :: String -- Name we show to
                                       , actionPriority :: Logger.Priority
                                       -- An action which can be called to see
                                       -- if the action has finished yet.
-                                      , actionExtra :: a
+                                      , _actionExtra :: a
                                       }
 
 instance Show (DelayedActionX a) where
@@ -426,8 +424,8 @@ workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
             res <- try wait
             case res of
                 -- Really don't want an exception to kill this thread but not sure where it should go
-                Left (e :: SomeException) -> return ()
-                Right r -> return ()
+                Left (_e :: SomeException) -> return ()
+                Right _r -> return ()
             -- Action finished, nothing to abort now
             writeVar qabort id
             return ()
@@ -615,16 +613,6 @@ shakeShut IdeState{..} = withMVar shakeAbort $ \stop -> do
     stop
     shakeClose
 
--- | This is a variant of withMVar where the first argument is run unmasked and if it throws
--- an exception, the previous value is restored while the second argument is executed masked.
-withMVar' :: MVar a -> (a -> IO ()) -> IO (a, c) -> IO c
-withMVar' var unmasked masked = mask $ \restore -> do
-    a <- takeMVar var
-    restore (unmasked a) `onException` putMVar var a
-    (a', c) <- masked
-    putMVar var a'
-    pure c
-
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
 -- has already finished as is the case with useWithStaleFast
@@ -640,9 +628,6 @@ delay herald k a = do
     let da = mkDelayedAction herald (Key k) Info a
     -- Do not wait for the action to return
     void $ liftIO $ queueAction [da] queue
-
---  runAfterDB (\db -> do
---    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
 
 -- | Running an action which DIRECTLY corresponds to something a user did,
 -- for example computing hover information.
@@ -674,18 +659,9 @@ shakeRun :: Logger.Priority
                                 -- users.
          -> IdeState -> [Action a] -> IO (IO (), IO [a])
 shakeRun p herald IdeState{shakeExtras=ShakeExtras{..},..} acts  =
-    {-
-    withMVar'
-        abort
-        (\stop -> do
-              (stopTime,_) <- duration stop
-              return ()
-              logPriority logger p $ T.pack $ "start shakeRun: " ++ herald ++ " (abort time:" ++ showDuration stopTime ++ ")"
-        )
         -- It is crucial to be masked here, otherwise we can get killed
         -- between spawning the new thread and updating shakeAbort.
         -- See https://github.com/digital-asset/ghcide/issues/79
-        -}
         (do
               aThread <- asyncWithUnmask $ \restore -> do
                     -- Try to run the action and record how long it took

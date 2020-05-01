@@ -29,7 +29,6 @@ import           GHC.Generics
 import Data.Either.Extra
 import System.IO.Error
 import qualified Data.ByteString.Char8 as BS
-import Data.HashSet as HS
 import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import Development.IDE.Core.RuleTypes
@@ -48,7 +47,6 @@ import Foreign.Storable
 import qualified System.Posix.Error as Posix
 #endif
 
-import Development.IDE.Core.RuleTypes
 import qualified Development.IDE.Types.Logger as L
 
 import Language.Haskell.LSP.Core

@@ -18,7 +18,6 @@ import           Development.IDE.Core.Shake
 import           Development.IDE.LSP.Server
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Logger
-import           Development.Shake
 import qualified Language.Haskell.LSP.Core       as LSP
 import           Language.Haskell.LSP.Messages
 import           Language.Haskell.LSP.Types

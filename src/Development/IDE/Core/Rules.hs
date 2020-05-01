@@ -48,17 +48,13 @@ import Development.IDE.Types.Location
 import Development.IDE.GHC.Compat hiding (parseModule, typecheckModule)
 import Development.IDE.GHC.Util
 import Development.IDE.GHC.WithDynFlags
-import Data.Coerce
 import Data.Either.Extra
 import qualified Development.IDE.Types.Logger as L
 import Data.Maybe
 import           Data.Foldable
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntMap.Strict (IntMap)
-import qualified Data.IntSet as IntSet
 import Data.List
-import Data.List.NonEmpty (NonEmpty(..))
-import Data.Ord
 import qualified Data.Set                                 as Set
 import qualified Data.HashSet                             as HS
 import qualified Data.Text                                as T
@@ -100,7 +96,7 @@ useE :: IdeRule k v => k -> NormalizedFilePath -> MaybeT IdeAction (v, PositionM
 useE k = MaybeT . useWithStaleFast k
 
 useNoFileE :: IdeRule k v => IdeState -> k -> MaybeT IdeAction v
-useNoFileE ide k = fst <$> useE k emptyFilePath
+useNoFileE _ide k = fst <$> useE k emptyFilePath
 
 usesE :: IdeRule k v => k -> [NormalizedFilePath] -> MaybeT Action [v]
 usesE k = MaybeT . fmap sequence . uses k
