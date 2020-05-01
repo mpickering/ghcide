@@ -49,6 +49,7 @@ import qualified System.Posix.Error as Posix
 #endif
 
 import Development.IDE.Core.RuleTypes
+import qualified Development.IDE.Types.Logger as L
 
 import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.VFS
@@ -180,7 +181,7 @@ setBufferModified state absFile contents = do
     VFSHandle{..} <- getIdeGlobalState state
     whenJust setVirtualFileContents $ \set ->
         set (filePathToUri' absFile) contents
-    shakeRunInternalKill "FileStoreBuffer" state []
+    shakeRunInternalKill state []
 
 -- | Note that some buffer for a specific file has been modified but not
 -- with what changes.
@@ -195,9 +196,10 @@ setFileModified state prop nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternalKill "FileStoreTC" state
-      ([void (use GetSpanInfo nfp)]
-        ++ [typecheckParents nfp | prop])
+    let da = mkDelayedAction "FileStoreTC" (TypeCheck, nfp) L.Info (void $ use TypeCheck nfp)
+        parents = mkDelayedAction "ParentTC" ("Parents" :: String, nfp) L.Debug (typecheckParents nfp)
+    shakeRunInternalKill state
+      ([da] ++ [parents | prop])
 
 
 typecheckParents :: NormalizedFilePath -> Action ()
@@ -214,4 +216,4 @@ setSomethingModified state = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    shakeRunInternalKill "FileStoreSomething" state []
+    shakeRunInternalKill state []

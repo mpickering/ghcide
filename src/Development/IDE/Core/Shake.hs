@@ -4,6 +4,8 @@
 {-# LANGUAGE ExistentialQuantification  #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE PatternSynonyms            #-}
+{-# LANGUAGE ExplicitNamespaces         #-}
 
 -- | A Shake implementation of the compiler service.
 --
@@ -43,7 +45,7 @@ module Development.IDE.Core.Shake(
     deleteValue,
     OnDiskRule(..),
 
-    workerThread, delay,
+    workerThread, delay, DelayedAction, mkDelayedAction,
     IdeAction(..), runIdeAction
     ) where
 
@@ -260,27 +262,68 @@ instance Ord QPriority where
     compare (QPriority r q i) (QPriority r' q' i') = compare i i' <> compare r r' <> compare q q'
 
 
-type PriorityMap = PQ.HashPSQ Int QPriority DelayedAction
+data KeyWithId = KeyWithId Key Int deriving (Eq)
+
+instance Hashable KeyWithId where
+  hashWithSalt salt (KeyWithId k _) = hashWithSalt salt k
+
+instance Ord KeyWithId where
+    compare (KeyWithId h1 i1) (KeyWithId h2 i2) = i1 `compare` i2
+
+
+type PriorityMap =  PQ.HashPSQ KeyWithId QPriority DelayedActionInternal
 
 -- | Actions we want to run on the shake database are queued up and batched together.
 -- A batch can be killed when a file is modified as we assume it will invalidate it.
 data ShakeQueue = ShakeQueue
                 { qactions :: Var PriorityMap
+                -- An action which cancels the currently running batch and
+                -- requeues the participants.
                 , qabort :: Var (IO () -> IO ())
+                -- A monotonically increasing integer to give each request
+                -- a unique identifier.
                 , qcount :: Var Int
-                -- We take this MVar when the actions are empty, it is filled
-                -- when an action is written to the map
+                -- The worker takes this MVar when the actions are empty, it is filled
+                -- when an action is written to the map which allows the
+                -- worker to continue.
                 , qTrigger :: MVar ()
                 }
 
-data DelayedAction = DelayedAction { actionName :: String
-                                   , actionId :: Int
-                                   , actionQPriority :: QPriority
-                                   , actionPriority :: Logger.Priority
-                                   , actionFinished :: (IO Bool)
-                                   , getAction :: (Action ()) }
+-- This is stuff we make up and add onto the information the user
+-- provided.
+data DelayedActionExtra = DelayedActionExtra { actionInternalId :: Int
+                                             , actionInternalQPriority :: QPriority
+                                             , actionInternalFinished :: IO Bool
+                                             , actionInternal :: Action ()
+                                             }
 
-instance Show DelayedAction where
+type DelayedAction a = DelayedActionX (Action a)
+type DelayedActionInternal = DelayedActionX DelayedActionExtra
+
+pattern DelayedActionInternal :: String -> Key -> Logger.Priority -> Action () -> Int -> QPriority -> IO Bool -> DelayedActionX DelayedActionExtra
+pattern DelayedActionInternal {actionInternalName, actionInternalKey, actionInternalPriority, getAction
+                              , actionId, actionQPriority, actionFinished}
+                              = DelayedActionX actionInternalName actionInternalKey actionInternalPriority
+                                    (DelayedActionExtra actionId actionQPriority actionFinished getAction)
+
+pattern DelayedAction :: String -> Key -> Logger.Priority -> Action a -> DelayedAction a
+pattern DelayedAction a b c d = DelayedActionX a b c d
+
+mkDelayedAction :: (Show k, Typeable k, Hashable k, Eq k)
+                => String -> k -> Logger.Priority -> Action a -> DelayedAction a
+mkDelayedAction s k = DelayedAction s (Key k)
+
+data DelayedActionX a = DelayedActionX { actionName :: String -- Name we show to the user
+                                      , actionKey :: Key
+                                      -- The queue only contrains entries for
+                                      -- unique key values.
+                                      , actionPriority :: Logger.Priority
+                                      -- An action which can be called to see
+                                      -- if the action has finished yet.
+                                      , actionExtra :: a
+                                      }
+
+instance Show (DelayedActionX a) where
     show d = "DelayedAction: " ++ actionName d
 
 finishedBarrier :: Barrier a -> IO Bool
@@ -290,33 +333,41 @@ freshId :: ShakeQueue -> IO Int
 freshId (ShakeQueue{qcount}) = do
     modifyVar qcount (\n -> return (n + 1, n))
 
-queueAction :: String -> Logger.Priority -> [Action a] -> ShakeQueue -> IO [Barrier a]
-queueAction s p as sq = do
-    (bs, ds) <- unzip <$> mapM (mkDelayedAction sq s p) as
+-- Could replace this argument with a parameterised version of
+-- DelayedAction.
+queueAction :: [DelayedAction a]
+               -> ShakeQueue
+               -> IO [Barrier a]
+queueAction as sq = do
+    (bs, ds) <- unzip <$> mapM (instantiateDelayedAction sq) as
     modifyVar_ (qactions sq) (return . insertMany ds)
     -- Wake up the worker if necessary
     void $ tryPutMVar (qTrigger sq) ()
     return bs
 
-insertMany :: [DelayedAction] -> PriorityMap -> PriorityMap
-insertMany ds pm = foldr (\d pm' -> PQ.insert (actionId d) (getPriority d) d pm') pm ds
+insertMany :: [DelayedActionInternal] -> PriorityMap -> PriorityMap
+insertMany ds pm = foldr (\d pm' -> PQ.insert (mkKid d) (getPriority d) d pm') pm ds
 
-queueDelayedAction :: DelayedAction -> ShakeQueue -> IO ()
+
+mkKid :: DelayedActionX DelayedActionExtra -> KeyWithId
+mkKid d = KeyWithId (actionKey d) (actionId d)
+
+queueDelayedAction :: DelayedActionInternal -> ShakeQueue -> IO ()
 queueDelayedAction d sq = do
-    modifyVar_ (qactions sq) (return . PQ.insert (actionId d) (getPriority d) d)
+    modifyVar_ (qactions sq) (return . PQ.insert (mkKid d) (getPriority d) d)
     -- Wake up the worker if necessary
     void $ tryPutMVar (qTrigger sq) ()
 
-getPriority :: DelayedAction -> QPriority
-getPriority DelayedAction{..} = actionQPriority
+getPriority :: DelayedActionInternal -> QPriority
+getPriority = actionQPriority
 
-mkDelayedAction :: ShakeQueue -> String -> Logger.Priority -> Action a -> IO (Barrier a, DelayedAction)
-mkDelayedAction sq s p a = do
+instantiateDelayedAction :: ShakeQueue -> DelayedAction a -> IO (Barrier a, DelayedActionInternal)
+instantiateDelayedAction sq (DelayedAction s k p a) = do
     b <- newBarrier
     i <- freshId sq
-    let d = DelayedAction s i (QPriority 0 i False) p (finishedBarrier b)
-                  (do r <- a
-                      liftIO $ signalBarrier b r)
+    let a' = do r <- a
+                liftIO $ signalBarrier b r
+    let d = DelayedActionInternal s k p a' i (QPriority 0 i False) (finishedBarrier b)
     return (b, d)
 
 
@@ -324,12 +375,12 @@ newShakeQueue :: IO ShakeQueue
 newShakeQueue = do
     ShakeQueue <$> newVar (PQ.empty) <*> (newVar id) <*> newVar 0 <*> newEmptyMVar
 
-requeueIfCancelled :: ShakeQueue -> DelayedAction -> IO ()
-requeueIfCancelled sq d@(DelayedAction{..}) = do
+requeueIfCancelled :: ShakeQueue -> DelayedActionInternal -> IO ()
+requeueIfCancelled sq d@(DelayedActionInternal{..}) = do
     is_finished <- actionFinished
     unless is_finished (queueDelayedAction d sq)
 
-logDelayedAction :: Logger -> DelayedAction -> Action ()
+logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
 logDelayedAction l d  = do
     start <- liftIO $ offsetTime
     getAction d
@@ -339,7 +390,7 @@ logDelayedAction l d  = do
         "finish: " ++ (actionName d) ++ " (took " ++ showDuration runTime ++ ")"
 
 -- | Retrieve up to k values from the map and return the modified map
-smallestK :: Int -> PriorityMap -> (PriorityMap, [DelayedAction])
+smallestK :: Int -> PriorityMap -> (PriorityMap, [DelayedActionInternal])
 smallestK 0 p = (p, [])
 smallestK n p = case PQ.minView p of
                     Nothing -> (p, [])
@@ -347,17 +398,25 @@ smallestK n p = case PQ.minView p of
                         let (p'', ds) = smallestK (n - 1) p'
                         in (p'', v:ds)
 
+type QueueInfo = (Int, Int)
 
+getWork :: Int -> PriorityMap -> (PriorityMap, (QueueInfo, [DelayedActionInternal]))
+getWork n p =
+    let before_size = PQ.size p
+        (p', as) = smallestK n p
+        after_size = PQ.size p'
+    in (p', ((before_size, after_size), as))
 
 -- | A thread which continually reads from the queue running shake actions
 workerThread :: IdeState -> IO ()
 workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
     -- I choose 20 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
-    ds <- modifyVar qactions (return . smallestK 500)
+    (info, ds) <- modifyVar qactions (return . getWork 500)
     case ds of
+        -- Nothing to do, wait until some work is available.
         [] -> takeMVar qTrigger
         _ -> do
-            logDebug (logger shakeExtras) (T.pack $ "Starting: " ++ show ds)
+            logDebug (logger shakeExtras) (T.pack $ "Starting: " ++ show info ++ ":" ++ show ds)
             (cancel, wait) <- shakeRun Debug "batch" i (map (logDelayedAction (logger shakeExtras)) ds)
             writeVar qabort (\k -> do
                 k
@@ -568,38 +627,40 @@ withMVar' var unmasked masked = mask $ \restore -> do
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
 -- has already finished as is the case with useWithStaleFast
-delayedAction :: String -> Action () -> IdeAction ()
-delayedAction herald a = tell [(herald, a)]
+delayedAction :: DelayedAction () -> IdeAction ()
+delayedAction a = tell [a]
 
 -- | A varient of delayedAction for the Action monad
 -- The supplied action *will* be run but at least not until the current action has finished.
-delay :: String -> Action () -> Action ()
-delay herald a = do
+delay :: (Typeable k, Show k, Hashable k, Eq k)
+      => String -> k -> Action () -> Action ()
+delay herald k a = do
     ShakeExtras{queue} <- getShakeExtras
+    let da = mkDelayedAction herald (Key k) Info a
     -- Do not wait for the action to return
-    void $ liftIO $ queueAction herald Info [a] queue
+    void $ liftIO $ queueAction [da] queue
 
 --  runAfterDB (\db -> do
 --    void $ shakeRun Debug ("DELAYED:" ++ herald) s [a] db)
 
 -- | Running an action which DIRECTLY corresponds to something a user did,
 -- for example computing hover information.
-shakeRunUser :: String -> IdeState -> [Action a] -> IO ([IO a])
-shakeRunUser s ide as = do
-    bs <- queueAction s Info as (shakeQueue ide)
+shakeRunUser :: IdeState -> [DelayedAction a] -> IO ([IO a])
+shakeRunUser ide as = do
+    bs <- queueAction as (shakeQueue ide)
     return $ map waitBarrier bs
 -- | Running an action which is INTERNAL to shake, for example, a file has
 -- been modified, basically any use of shakeRun which is not blocking (ie
 -- which is not called via runAction).
-shakeRunInternal :: String -> IdeState -> [Action a] -> IO ()
-shakeRunInternal s ide as = void $ queueAction s Debug as (shakeQueue ide)
+shakeRunInternal :: IdeState -> [DelayedAction a] -> IO ()
+shakeRunInternal ide as = void $ queueAction as (shakeQueue ide)
 
 -- | Like shakeRun internal but kill ongoing work first
-shakeRunInternalKill :: String -> IdeState -> [Action a] -> IO ()
-shakeRunInternalKill s ide as = do
+shakeRunInternalKill :: IdeState -> [DelayedAction a] -> IO ()
+shakeRunInternalKill ide as = do
     -- TODO: There is a race here if the actions get queued
     -- and start to run before the kill, sh
-    let k = shakeRunInternal s ide as
+    let k = shakeRunInternal ide as
     kill <- readVar (qabort (shakeQueue ide))
     kill k
 
@@ -700,13 +761,13 @@ useWithStale :: IdeRule k v
     => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
 useWithStale key file = head <$> usesWithStale key [file]
 
-newtype IdeAction a = IdeAction { runIdeActionT  :: WriterT [(String, Action ())] (ReaderT IdeState IO) a }
-    deriving (MonadReader IdeState, MonadWriter [(String, Action ())], MonadIO, Functor, Applicative, Monad)
+newtype IdeAction a = IdeAction { runIdeActionT  :: WriterT [DelayedAction ()] (ReaderT IdeState IO) a }
+    deriving (MonadReader IdeState, MonadWriter [DelayedAction ()], MonadIO, Functor, Applicative, Monad)
 
 runIdeAction :: String -> IdeState -> IdeAction a -> IO a
 runIdeAction _herald s i = do
     (res, ws) <- runReaderT (runWriterT (runIdeActionT i)) s
-    mapM_ (\(herald2, a) -> shakeRunInternal herald2 s [a]) ws
+    shakeRunInternal s ws
     return res
 
 askShake :: IdeAction ShakeExtras
@@ -734,18 +795,20 @@ useWithStaleFast key file = do
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
-  delayedAction ("C:" ++ (show key)) (void $ use key file)
+  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (void $ use key file))
   return final_res
 
 -- MattP: Removed the distinction between runAction and runActionSync
 -- as it is no longer necessary now the are no `action` rules. This is how
 -- it should remain as they add a lot of overhead for hover for example if
 -- you run them every time.
+-- There is only one use of runAction left in the whole code base (apart from exe/Main.hs)
+-- In CodeAction where we probably want to remove it.
 runAction :: String -> IdeState -> Action a -> IO a
 runAction herald ide action = runActionSync herald ide action
 
 runActionSync :: String -> IdeState -> Action a -> IO a
-runActionSync herald s act = fmap head $ join $ sequence <$> shakeRunUser herald s [act]
+runActionSync herald s act = fmap head $ join $ sequence <$> shakeRunUser s [mkDelayedAction herald herald Info act]
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath

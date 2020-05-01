@@ -50,6 +50,7 @@ import Development.IDE.GHC.Util
 import Development.IDE.GHC.WithDynFlags
 import Data.Coerce
 import Data.Either.Extra
+import qualified Development.IDE.Types.Logger as L
 import Data.Maybe
 import           Data.Foldable
 import qualified Data.IntMap.Strict as IntMap
@@ -178,9 +179,10 @@ getHomeHieFile f = do
     else do
       -- Could block here with a barrier rather than fail
       b <- liftIO $ newBarrier
-      lift $ delayedAction "OutOfDateHie" (do pm <- use_ GetParsedModule f
-                                              typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
-                                              (liftIO $ signalBarrier b ()))
+      lift $ delayedAction (mkDelayedAction "OutOfDateHie" ("hie" :: T.Text, f) L.Info
+                              (do pm <- use_ GetParsedModule f
+                                  typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
+                                  liftIO $ signalBarrier b ()))
       () <- MaybeT $ liftIO $ timeout 1 $ waitBarrier b
       liftIO $ loadHieFile hie_f
 

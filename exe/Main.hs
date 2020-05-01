@@ -422,11 +422,11 @@ loadSession dir = liftIO $ do
       let cfps = map fst cs
       -- Delayed to avoid recursion and only run if something changed.
       unless (null cs) (
-        delay "InitialLoad" $ void $ do
+        delay "InitialLoad" ("InitialLoad" :: String, cfps) (void $ do
           cfps' <- liftIO $ filterM (IO.doesFileExist . fromNormalizedFilePath) cfps
           mmt <- uses GetModificationTime cfps'
           let cs_exist = catMaybes (zipWith (<$) cfps' mmt)
-          uses GetModIface cs_exist)
+          uses GetModIface cs_exist))
       return opts
 
 
