@@ -13,12 +13,14 @@ module Development.IDE.Spans.Common (
 , emptySpanDoc
 , spanDocToMarkdown
 , spanDocToMarkdownForTest
+, DocMap
 ) where
 
 import Data.Data
 import qualified Data.Generics
 import qualified Data.Text as T
 import Data.List.Extra
+import Data.Map (Map)
 
 import GHC
 import Outputable
@@ -31,6 +33,8 @@ import Var
 
 import qualified Documentation.Haddock.Parser as H
 import qualified Documentation.Haddock.Types as H
+
+type DocMap = Map Name SpanDoc
 
 showGhc :: Outputable a => a -> String
 showGhc = showPpr unsafeGlobalDynFlags

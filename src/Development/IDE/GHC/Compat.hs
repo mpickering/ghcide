@@ -11,6 +11,7 @@ module Development.IDE.GHC.Compat(
     HieFileResult(..),
     HieFile(..),
     NameCacheUpdater(..),
+    RefMap,
     hieExportNames,
     mkHieFile,
     writeHieFile,
@@ -69,6 +70,9 @@ import Development.IDE.GHC.HieAst (mkHieFile)
 #if MIN_GHC_API_VERSION(8,6,0)
 import Development.IDE.GHC.HieBin (readHieFile,writeHieFile,NameCacheUpdater(..),HieFileResult(..))
 #endif
+
+import Data.Map (Map)
+
 #if MIN_GHC_API_VERSION(8,10,0)
 import HscTypes (mi_mod_hash)
 #endif
@@ -251,6 +255,8 @@ getModuleHash = mi_mod_hash . mi_final_exts
 #else
 getModuleHash = mi_mod_hash
 #endif
+
+type RefMap = Map Identifier [(Span, IdentifierDetails TypeIndex)]
 
 supportsHieFiles :: Bool
 supportsHieFiles = True
