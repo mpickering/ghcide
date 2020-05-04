@@ -31,7 +31,6 @@ import DriverPhases
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import           System.FilePath
-import DriverPhases
 
 data Import
   = FileImport !ArtifactsLocation
