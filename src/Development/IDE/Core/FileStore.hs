@@ -194,11 +194,10 @@ setFileModified state prop nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    let da = mkDelayedAction "FileStoreTC" (TypeCheck, nfp) L.Info (void $ use TypeCheck nfp)
+    let da = mkDelayedAction "FileStoreTC" (TypeCheck, nfp) L.Info (void $ use GetHieFile nfp)
         parents = mkDelayedAction "ParentTC" ("Parents" :: String, nfp) L.Debug (typecheckParents nfp)
     shakeRunInternalKill state
       ([da] ++ [parents | prop])
-
 
 typecheckParents :: NormalizedFilePath -> Action ()
 typecheckParents nfp = do
