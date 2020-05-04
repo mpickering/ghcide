@@ -7,6 +7,7 @@ module Development.IDE.Spans.AtPoint (
     atPoint
   , gotoDefinition
   , gotoTypeDefinition
+  , documentHighlight
   ) where
 
 import           Development.IDE.GHC.Error
@@ -35,8 +36,30 @@ import qualified Data.Text as T
 import qualified Data.Map as M
 import qualified Data.Array as A
 
+
 import IfaceType
 import Data.Either
+
+documentHighlight
+  :: Monad m
+  => HieFile
+  -> RefMap
+  -> Position
+  -> MaybeT m [DocumentHighlight]
+documentHighlight hf rf pos = MaybeT $ pure (Just highlights)
+  where
+    ns = concat $ pointCommand hf pos (rights . M.keys . nodeIdentifiers . nodeInfo)
+    highlights = do
+      n <- ns
+      ref <- maybe [] id (M.lookup (Right n) rf)
+      pure $ makeHighlight ref
+    makeHighlight (sp,dets) =
+      DocumentHighlight (srcSpanToRange $ RealSrcSpan sp) (Just $ highlightType $ identInfo dets)
+    highlightType s =
+      if any (isJust . getScopeFromContext) s
+        then HkWrite
+        else HkRead
+
 gotoTypeDefinition
   :: MonadIO m
   => (Module -> MaybeT m (HieFile, FilePath))
