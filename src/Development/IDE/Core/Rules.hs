@@ -23,6 +23,7 @@ module Development.IDE.Core.Rules(
     getAtPoint,
     getDefinition,
     getTypeDefinition,
+    highlightAtPoint,
     getDependencies,
     getParsedModule,
     generateCore,
@@ -64,6 +65,7 @@ import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Core.PositionMapping
+import           Language.Haskell.LSP.Types
 
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
@@ -142,6 +144,12 @@ getTypeDefinition file pos = runMaybeT $ do
     hf <- fst <$> useE GetHieFile file
     AtPoint.gotoTypeDefinition (getHieFile ide file) opts hf pos
 
+highlightAtPoint :: NormalizedFilePath -> Position -> IdeAction (Maybe [DocumentHighlight])
+highlightAtPoint file pos = runMaybeT $ do
+    hf <- fst <$> useE GetHieFile file
+    (PRefMap rf,mapping) <- useE GetRefMap file
+    !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
+    AtPoint.documentHighlight hf rf pos'
 
 getHieFile
   :: IdeState
