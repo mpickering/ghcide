@@ -12,7 +12,6 @@ module Development.IDE.GHC.Compat(
     HieFile(..),
     NameCacheUpdater(..),
     hieExportNames,
-    hie_module,
     mkHieFile,
     writeHieFile,
     readHieFile,
@@ -66,11 +65,16 @@ import Avail
 import ErrUtils (ErrorMessages)
 import FastString (FastString)
 
+import Development.IDE.GHC.HieAst (mkHieFile)
+#if MIN_GHC_API_VERSION(8,6,0)
+import Development.IDE.GHC.HieBin (readHieFile,writeHieFile,NameCacheUpdater(..),HieFileResult(..))
+#endif
 #if MIN_GHC_API_VERSION(8,10,0)
 import HscTypes (mi_mod_hash)
 #endif
 
 #if MIN_GHC_API_VERSION(8,8,0)
+import HscTypes (srcErrorMessages)
 import Control.Applicative ((<|>))
 import Development.IDE.GHC.HieAst (mkHieFile)
 import Development.IDE.GHC.HieBin
@@ -78,29 +82,19 @@ import HieUtils
 import HieTypes
 import IfaceEnv
 
-supportsHieFiles :: Bool
-supportsHieFiles = True
 
-hieExportNames :: HieFile -> [(SrcSpan, Name)]
-hieExportNames = nameListFromAvails . hie_exports
+import HieUtils
 
 #else
 
 #if MIN_GHC_API_VERSION(8,6,0)
-import BinIface
-import Data.IORef
-import IfaceEnv
+import Development.IDE.GHC.HieTypes
+import Development.IDE.GHC.HieUtils
 #endif
 
-import Binary
 import Control.Exception (catch)
-import Data.ByteString (ByteString)
-import GhcPlugins hiding (ModLocation)
-import NameCache
-import TcRnTypes
 import System.IO
 import Foreign.ForeignPtr
-import MkIface
 
 
 hPutStringBuffer :: Handle -> StringBuffer -> IO ()
@@ -227,59 +221,8 @@ nameListFromAvails as =
 #if !MIN_GHC_API_VERSION(8,8,0)
 -- Reimplementations of functions for HIE files for GHC 8.6
 
-mkHieFile :: ModSummary -> TcGblEnv -> RenamedSource -> ByteString -> Hsc HieFile
-mkHieFile ms ts _ _ = return (HieFile (ms_mod ms) es)
-  where
-    es = nameListFromAvails (mkIfaceExports (tcg_exports ts))
-
 ml_hie_file :: GHC.ModLocation -> FilePath
 ml_hie_file ml = ml_hi_file ml ++ ".hie"
-
-data HieFile = HieFile {hie_module :: Module, hie_exports :: [(SrcSpan, Name)]}
-
-hieExportNames :: HieFile -> [(SrcSpan, Name)]
-hieExportNames = hie_exports
-
-instance Binary HieFile where
-  put_ bh (HieFile m es) = do
-    put_ bh m
-    put_ bh es
-
-  get bh = do
-    mod <- get bh
-    es <- get bh
-    return (HieFile mod es)
-
-data HieFileResult = HieFileResult { hie_file_result :: HieFile }
-
-writeHieFile :: FilePath -> HieFile -> IO ()
-readHieFile :: NameCacheUpdater -> FilePath -> IO HieFileResult
-supportsHieFiles :: Bool
-
-#if MIN_GHC_API_VERSION(8,6,0)
-
-writeHieFile fp hie = do
-  bh <- openBinMem (1024 * 1024)
-  putWithUserData (const $ return ()) bh hie
-  writeBinMem bh fp
-
-readHieFile nc fp = do
-  bh <- readBinMem fp
-  hie_file <- getWithUserData nc bh
-  return (HieFileResult hie_file)
-
-supportsHieFiles = True
-
-#else
-
-supportsHieFiles = False
-
-writeHieFile _ _ = return ()
-
-readHieFile _ _ = return undefined
-
-#endif
-
 #endif
 
 getHeaderImports
@@ -309,6 +252,11 @@ getModuleHash = mi_mod_hash . mi_final_exts
 getModuleHash = mi_mod_hash
 #endif
 
+supportsHieFiles :: Bool
+supportsHieFiles = True
+
+hieExportNames :: HieFile -> [(SrcSpan, Name)]
+hieExportNames = nameListFromAvails . hie_exports
 
 getPackageName :: DynFlags -> Module.InstalledUnitId -> Maybe PackageName
 getPackageName dfs i = packageName <$> lookupPackage dfs (Module.DefiniteUnitId (Module.DefUnitId i))
