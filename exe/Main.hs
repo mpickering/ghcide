@@ -10,7 +10,6 @@ module Main(main) where
 import Data.Time.Clock (UTCTime)
 import Linker (initDynLinker)
 import Data.IORef
-import NameCache
 import Packages
 import Module
 import Arguments
@@ -80,6 +79,11 @@ import System.Directory
 
 import Utils
 
+import NameCache
+
+import HieDb.Create
+import HieDb.Types
+
 --import Rules
 --import RuleTypes
 --
@@ -94,6 +98,20 @@ ghcideVersion = do
              <> " (GHC: " <> VERSION_ghc
              <> ") (PATH: " <> path <> ")"
              <> gitHashSection
+
+runWithDb :: FilePath -> (HieDb -> HieWriterChan -> IO a) -> IO a
+runWithDb fp k =
+  withHieDb fp $ \hiedb -> do
+    initConn hiedb
+    bracket (mkChan hiedb) (killThread . snd) (k hiedb . fst)
+  where
+    mkChan :: HieDb -> IO (HieWriterChan, ThreadId)
+    mkChan db = do
+      chan <- newChan
+      tid <- forkIO $ forever $ do
+        k <- readChan chan
+        k db
+      return (chan,tid)
 
 main :: IO ()
 main = do
@@ -120,65 +138,65 @@ main = do
         options = def { LSP.executeCommandCommands = Just [command]
                       , LSP.completionTriggerCharacters = Just "."
                       }
+    runWithDb ("ghcide-"++takeBaseName dir++"-"++VERSION_ghc <.> "hiedb") $ \hiedb hiechan -> do
+      if argLSP then do
+          t <- offsetTime
+          hPutStrLn stderr "Starting LSP server..."
+          hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
+          runLanguageServer options (pluginHandler plugins) onInitialConfiguration onConfigurationChange $ \getLspId event vfs caps -> do
+              t <- t
+              hPutStrLn stderr $ "Started LSP server in " ++ showDuration t
+              let options = (defaultIdeOptions $ loadSession dir)
+                      { optReportProgress = clientSupportsProgress caps
+                      , optShakeProfiling = argsShakeProfiling
+                      , optTesting        = argsTesting
+                      , optThreads        = argsThreads
+                      , optInterfaceLoadingDiagnostics = argsTesting
+                      }
+                  logLevel = if argsVerbose then minBound else Info
+              debouncer <- newAsyncDebouncer
+              fst <$> initialise caps (mainRule >> pluginRules plugins)
+                        getLspId event (logger logLevel) debouncer options vfs hiedb hiechan
+      else do
+          -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
+          hSetEncoding stdout utf8
+          hSetEncoding stderr utf8
 
-    if argLSP then do
-        t <- offsetTime
-        hPutStrLn stderr "Starting LSP server..."
-        hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
-        runLanguageServer options (pluginHandler plugins) onInitialConfiguration onConfigurationChange $ \getLspId event vfs caps -> do
-            t <- t
-            hPutStrLn stderr $ "Started LSP server in " ++ showDuration t
-            let options = (defaultIdeOptions $ loadSession dir)
-                    { optReportProgress = clientSupportsProgress caps
-                    , optShakeProfiling = argsShakeProfiling
-                    , optTesting        = argsTesting
-                    , optThreads        = argsThreads
-                    , optInterfaceLoadingDiagnostics = argsTesting
-                    }
-                logLevel = if argsVerbose then minBound else Info
-            debouncer <- newAsyncDebouncer
-            fst <$> initialise caps (mainRule >> pluginRules plugins)
-                      getLspId event (logger logLevel) debouncer options vfs
-    else do
-        -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
-        hSetEncoding stdout utf8
-        hSetEncoding stderr utf8
+          putStrLn $ "Ghcide setup tester in " ++ dir ++ "."
+          putStrLn "Report bugs at https://github.com/digital-asset/ghcide/issues"
 
-        putStrLn $ "Ghcide setup tester in " ++ dir ++ "."
-        putStrLn "Report bugs at https://github.com/digital-asset/ghcide/issues"
+          putStrLn $ "\nStep 1/6: Finding files to test in " ++ dir
+          files <- expandFiles (argFiles ++ ["." | null argFiles])
+          -- LSP works with absolute file paths, so try and behave similarly
+          files <- nubOrd <$> mapM IO.canonicalizePath files
+          putStrLn $ "Found " ++ show (length files) ++ " files"
 
-        putStrLn $ "\nStep 1/6: Finding files to test in " ++ dir
-        files <- expandFiles (argFiles ++ ["." | null argFiles])
-        -- LSP works with absolute file paths, so try and behave similarly
-        files <- nubOrd <$> mapM IO.canonicalizePath files
-        putStrLn $ "Found " ++ show (length files) ++ " files"
+          putStrLn "\nStep 2/6: Looking for hie.yaml files that control setup"
+          cradles <- mapM findCradle files
+          let ucradles = nubOrd cradles
+          let n = length ucradles
+          putStrLn $ "Found " ++ show n ++ " cradle" ++ ['s' | n /= 1]
+          putStrLn "\nStep 3/6: Initializing the IDE"
+          vfs <- makeVFSHandle
+          debouncer <- newAsyncDebouncer
+          (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Debug) debouncer (defaultIdeOptions $ loadSession dir) vfs hiedb hiechan
 
-        putStrLn "\nStep 2/6: Looking for hie.yaml files that control setup"
-        cradles <- mapM findCradle files
-        let ucradles = nubOrd cradles
-        let n = length ucradles
-        putStrLn $ "Found " ++ show n ++ " cradle" ++ ['s' | n /= 1]
-        putStrLn "\nStep 3/6: Initializing the IDE"
-        vfs <- makeVFSHandle
-        debouncer <- newAsyncDebouncer
-        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Debug) debouncer (defaultIdeOptions $ loadSession dir) vfs
-
-        putStrLn "\nStep 4/6: Type checking the files"
-        setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
-        _ <- runActionSync "TypecheckTest" ide $ uses TypeCheck (map toNormalizedFilePath' files)
---        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "src/Development/IDE/Core/Rules.hs"
-        {-
-        let fp =  toNormalizedFilePath' "ghc/Main.hs"
-        results <- runActionSync "tc" ide $ use TypeCheck $ toNormalizedFilePath' "ghc/Main.hs"
-        hover1 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
-        print hover1
-        traceMarkerIO "START"
-        hover2 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
-        print hover2
-        traceMarkerIO "END"
-        -}
-        cancel worker
-        return ()
+          putStrLn "\nStep 4/6: Type checking the files"
+          setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
+          _ <- runActionSync "TypecheckTest" ide $ uses TypeCheck (map toNormalizedFilePath' files)
+  --        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "src/Development/IDE/Core/Rules.hs"
+          {-
+          let fp =  toNormalizedFilePath' "ghc/Main.hs"
+          results <- runActionSync "tc" ide $ use TypeCheck $ toNormalizedFilePath' "ghc/Main.hs"
+          hover1 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
+          print hover1
+          traceMarkerIO "START"
+          hover2 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
+          print hover2
+          traceMarkerIO "END"
+          -}
+          cancel worker
+          return ()
 
 expandFiles :: [FilePath] -> IO [FilePath]
 expandFiles = concatMapM $ \x -> do

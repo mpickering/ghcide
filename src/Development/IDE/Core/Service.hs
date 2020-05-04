@@ -34,6 +34,7 @@ import           Development.IDE.Core.Shake
 import Control.Concurrent.Async
 import Control.Monad
 import GHC.Conc
+import HieDb.Types
 
 
 
@@ -52,8 +53,10 @@ initialise :: LSP.ClientCapabilities
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> VFSHandle
+           -> HieDb
+           -> HieWriterChan
            -> IO (IdeState, Async ())
-initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
+initialise caps mainRule getLspId toDiags logger debouncer options vfs hiedb hiedbChan = do
     ide <- shakeOpen
         getLspId
         toDiags
@@ -61,6 +64,8 @@ initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
         debouncer
         (optShakeProfiling options)
         (optReportProgress options)
+        hiedb
+        hiedbChan
         shakeOptions
           { shakeThreads = optThreads options
           , shakeFiles   = fromMaybe "/dev/null" (optShakeFiles options)

@@ -24,6 +24,7 @@ module Development.IDE.Core.Rules(
     getDefinition,
     getTypeDefinition,
     highlightAtPoint,
+    refsAtPoint,
     getDependencies,
     getParsedModule,
     generateCore,
@@ -150,6 +151,14 @@ highlightAtPoint file pos = runMaybeT $ do
     (PRefMap rf,mapping) <- useE GetRefMap file
     !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
     AtPoint.documentHighlight hf rf pos'
+
+refsAtPoint :: NormalizedFilePath -> Position -> IdeAction (Maybe [Location])
+refsAtPoint file pos = runMaybeT $ do
+    hf <- fst <$> useE GetHieFile file
+    hiedb <- lift $ hiedb <$> askShake
+    (PRefMap rf,mapping) <- useE GetRefMap file
+    !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
+    AtPoint.referencesAtPoint hiedb hf rf pos'
 
 getHieFile
   :: IdeState
@@ -428,7 +437,8 @@ getHieFileRule =
         Just hf -> pure ([],Just hf)
         Nothing -> do
           hsc  <- hscEnv <$> use_ GhcSession f
-          liftIO $ generateAndWriteHieFile hsc (tmrModule tcm)
+          ShakeExtras{hiedbChan} <- getShakeExtras
+          liftIO $ generateAndWriteHieFile hsc hiedbChan (tmrModule tcm)
 
 getRefMapRule :: Rules ()
 getRefMapRule =
@@ -507,11 +517,12 @@ typeCheckRuleDefinition file pm generateArtifacts = do
   setPriority priorityTypeCheck
   IdeOptions { optDefer = defer } <- getIdeOptions
 
+  ShakeExtras{hiedbChan} <- getShakeExtras
   liftIO $ do
     res <- typecheckModule defer hsc (zipWith unpack mirs bytecodes) pm
     case res of
       (diags, Just (hsc,tcm)) | DoGenerateInterfaceFiles <- generateArtifacts -> do
-        (diagsHie,hf) <- generateAndWriteHieFile hsc (tmrModule tcm)
+        (diagsHie,hf) <- generateAndWriteHieFile hsc hiedbChan (tmrModule tcm)
         diagsHi  <- generateAndWriteHiFile hsc tcm
         return (diags <> diagsHi <> diagsHie, Just tcm{tmrHieFile=hf})
       (diags, res) -> return (diags, snd <$> res)

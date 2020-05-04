@@ -38,6 +38,9 @@ import qualified GHC.LanguageExtensions.Type as GHC
 import Development.IDE.Types.Options
 import Development.IDE.Types.Location
 import Outputable
+import Control.Concurrent.Chan
+
+import HieDb
 
 #if MIN_GHC_API_VERSION(8,6,0)
 import           DynamicLoading (initializePlugins)
@@ -283,14 +286,16 @@ atomicFileWrite targetPath write = do
   (tempFilePath, cleanUp) <- newTempFileWithin dir
   (write tempFilePath >> renameFile tempFilePath targetPath) `onException` cleanUp
 
-generateAndWriteHieFile :: HscEnv -> TypecheckedModule -> IO ([FileDiagnostic],Maybe Compat.HieFile)
-generateAndWriteHieFile hscEnv tcm =
+generateAndWriteHieFile :: HscEnv -> HieWriterChan -> TypecheckedModule -> IO ([FileDiagnostic],Maybe Compat.HieFile)
+generateAndWriteHieFile hscEnv hiechan tcm =
   handleGenerationErrors dflags "extended interface generation" $ do
     case tm_renamed_source tcm of
       Just rnsrc -> do
         hf <- runHsc hscEnv $
           GHC.mkHieFile mod_summary (fst $ tm_internals_ tcm) rnsrc ""
         atomicFileWrite targetPath $ flip GHC.writeHieFile hf
+        time <- getModificationTime targetPath
+        writeChan hiechan $ \db -> addRefsFromLoaded db targetPath time hf
         pure (Just hf)
       _ ->
         return Nothing

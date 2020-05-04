@@ -8,6 +8,7 @@ module Development.IDE.LSP.HoverDefinition
     , setHandlersDefinition
     , setHandlersTypeDefinition
     , setHandlersDocHighlight
+    , setHandlersReferences
     -- * For haskell-language-server
     , hover
     , gotoDefinition
@@ -34,11 +35,19 @@ gotoTypeDefinition = request "TypeDefinition" getTypeDefinition (MultiLoc []) Si
 hover          = request "Hover"      getAtPoint     Nothing      foundHover
 documentHighlight = request "DocumentHighlight" highlightAtPoint (List []) List
 
+references :: IdeState -> ReferenceParams -> IO (Either ResponseError (List Location))
+references ide (ReferenceParams (TextDocumentIdentifier uri) pos _ _) = do
+  mbResult <- case uriToFilePath' uri of
+    Just path -> logAndRunRequest "Reference" refsAtPoint ide pos path
+    Nothing -> pure Nothing
+  pure $ Right $ maybe (List []) List mbResult
+
 foundHover :: (Maybe Range, [T.Text]) -> Maybe Hover
 foundHover (mbRange, contents) =
   Just $ Hover (HoverContents $ MarkupContent MkMarkdown $ T.intercalate sectionSeparator contents) mbRange
 
-setHandlersDefinition, setHandlersHover, setHandlersTypeDefinition, setHandlersDocHighlight :: PartialHandlers c
+setHandlersDefinition, setHandlersHover, setHandlersTypeDefinition
+  , setHandlersDocHighlight, setHandlersReferences :: PartialHandlers c
 setHandlersDefinition = PartialHandlers $ \WithMessage{..} x ->
   return x{LSP.definitionHandler = withResponse RspDefinition $ const gotoDefinition}
 setHandlersTypeDefinition = PartialHandlers $ \WithMessage{..} x ->
@@ -47,6 +56,8 @@ setHandlersHover      = PartialHandlers $ \WithMessage{..} x ->
   return x{LSP.hoverHandler      = withResponse RspHover      $ const hover}
 setHandlersDocHighlight = PartialHandlers $ \WithMessage{..} x ->
   return x{LSP.documentHighlightHandler = withResponse RspDocumentHighlights $ const documentHighlight}
+setHandlersReferences = PartialHandlers $ \WithMessage{..} x ->
+  return x{LSP.referencesHandler = withResponse RspFindReferences $ const references}
 
 -- | Respond to and log a hover or go-to-definition request
 request

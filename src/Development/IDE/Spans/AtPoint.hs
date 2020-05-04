@@ -8,6 +8,7 @@ module Development.IDE.Spans.AtPoint (
   , gotoDefinition
   , gotoTypeDefinition
   , documentHighlight
+  , referencesAtPoint
   ) where
 
 import           Development.IDE.GHC.Error
@@ -39,6 +40,32 @@ import qualified Data.Array as A
 
 import IfaceType
 import Data.Either
+
+import HieDb (HieDb, search,RefRow(..))
+
+referencesAtPoint
+  :: MonadIO m
+  => HieDb
+  -> HieFile
+  -> RefMap
+  -> Position
+  -> MaybeT m [Location]
+referencesAtPoint hiedb hf rf pos = do
+  let names = concat $ pointCommand hf pos (rights . M.keys . nodeIdentifiers . nodeInfo)
+      rowToLoc row = Location file range
+        where
+          file = fromNormalizedUri $ filePathToUri' $ toNormalizedFilePath' $ refFile row
+          range = Range start end
+          start = Position (refSLine row - 1) (refSCol row -1)
+          end = Position (refELine row - 1) (refECol row -1)
+  locs <- forM names $ \name ->
+    case nameModule_maybe name of
+      Nothing ->
+        pure $ maybe [] (map $ srcSpanToLocation . RealSrcSpan . fst) $ M.lookup (Right name) rf
+      Just mod -> do
+         rows <- liftIO $ search hiedb (nameOccName name) (Just $ moduleName mod) (Just $ moduleUnitId mod)
+         pure $ map rowToLoc rows
+  pure $ concat locs
 
 documentHighlight
   :: Monad m
