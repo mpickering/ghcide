@@ -28,6 +28,7 @@ module Development.IDE.Core.Shake(
     shakeRun, shakeRunInternal, shakeRunInternalKill, shakeRunUser,
     shakeProfile,
     use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast, delayedAction,
+    useWithStaleFast', FastResult(..),
     use_, useNoFile_, uses_,
     define, defineEarlyCutoff, defineOnDisk, needOnDisk, needOnDisks,
     getDiagnostics, unsafeClearDiagnostics,
@@ -752,8 +753,11 @@ runIdeAction _herald s i = do
 askShake :: IdeAction ShakeExtras
 askShake = shakeExtras <$> ask
 
-useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
-useWithStaleFast key file = do
+-- A (maybe) stale result now, and an up to date one later
+data FastResult a = FastResult { stale :: Maybe (a,PositionMapping), uptoDate :: Barrier (Maybe a)  }
+
+useWithStaleFast' :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (FastResult v)
+useWithStaleFast' key file = do
   final_res <-  do
     -- This lookup directly looks up the key in the shake database and
     -- returns the last value that was computed for this key without
@@ -774,8 +778,12 @@ useWithStaleFast key file = do
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
-  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (void $ use key file))
-  return final_res
+  b <- liftIO $ newBarrier
+  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (use key file >>= liftIO . signalBarrier b))
+  return (FastResult final_res b)
+
+useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
+useWithStaleFast key file = stale <$> useWithStaleFast' key file
 
 -- MattP: Removed the distinction between runAction and runActionSync
 -- as it is no longer necessary now the are no `action` rules. This is how
