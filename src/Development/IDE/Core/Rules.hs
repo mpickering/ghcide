@@ -38,7 +38,6 @@ import Control.Monad.Trans.Maybe
 import Development.IDE.Core.Compile
 import Development.IDE.Core.OfInterest
 import Development.IDE.Types.Options
-import Development.IDE.Spans.Calculate
 import Development.IDE.Spans.Documentation
 import Development.IDE.Import.DependencyInformation
 import Development.IDE.Import.FindImports
@@ -62,7 +61,6 @@ import qualified Data.Text                                as T
 import           Development.IDE.GHC.Error
 import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
-import Development.IDE.Spans.Type
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Core.PositionMapping
 
@@ -121,24 +119,27 @@ getAtPoint :: NormalizedFilePath -> Position -> IdeAction (Maybe (Maybe Range, [
 getAtPoint file pos = fmap join $ runMaybeT $ do
   ide <- ask
   opts <- liftIO $ getIdeOptionsIO ide
-  (spans, mapping) <- useE  GetSpanInfo file
+
+  (hf, mapping) <- useE GetHieFile file
+  (PDocMap dm,_) <- useE GetDocMap file
+
   !pos' <- MaybeT (return $ fromCurrentPosition mapping pos)
-  return $ AtPoint.atPoint opts spans pos'
+  return $ AtPoint.atPoint opts hf dm pos'
 
 -- | Goto Definition.
 getDefinition :: NormalizedFilePath -> Position -> IdeAction (Maybe Location)
 getDefinition file pos = runMaybeT $ do
     ide <- ask
     opts <- liftIO $ getIdeOptionsIO ide
-    spans <- fst <$> useE GetSpanInfo file
-    AtPoint.gotoDefinition (getHieFile ide file) opts (spansExprs spans) pos
+    hf <- fst <$> useE GetHieFile file
+    AtPoint.gotoDefinition (getHieFile ide file) opts hf pos
 
 getTypeDefinition :: NormalizedFilePath -> Position -> IdeAction (Maybe Location)
 getTypeDefinition file pos = runMaybeT $ do
     ide <- ask
     opts <- liftIO $ getIdeOptionsIO ide
-    spans <- fst <$> useE GetSpanInfo file
-    AtPoint.gotoTypeDefinition (getHieFile ide file) opts (spansExprs spans) pos
+    hf <- fst <$> useE GetHieFile file
+    AtPoint.gotoTypeDefinition (getHieFile ide file) opts hf pos
 
 
 getHieFile
@@ -158,32 +159,33 @@ getHieFile ide file mod = do
 
 getHomeHieFile :: NormalizedFilePath -> MaybeT IdeAction HieFile
 getHomeHieFile f = do
-  ms <- fst <$> useE GetModSummary f
-  let normal_hie_f = toNormalizedFilePath' hie_f
-      hie_f = ml_hie_file $ ms_location ms
+  hfr <- lift $ useWithStaleFast' GetHieFile f
+  case stale hfr of
+    Just (hf,_) -> pure hf -- We already have the file
+    Nothing -> do -- We don't have the file, so try loading it from disk
+      ms <- fst <$> useE GetModSummary f
 
-  mbHieTimestamp <- either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime hie_f)
-  srcTimestamp   <- MaybeT (either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime $ fromNormalizedFilePath f))
-  liftIO $ print (mbHieTimestamp, srcTimestamp, hie_f, normal_hie_f)
-  let isUpToDate
-        | Just d <- mbHieTimestamp = d > srcTimestamp
-        | otherwise = False
+      let normal_hie_f = toNormalizedFilePath' hie_f
+          hie_f = ml_hie_file $ ms_location ms
 
-  if isUpToDate
-    then do
-      ncu <- mkUpdater
-      hf <- liftIO $ if isUpToDate then Just <$> loadHieFile ncu hie_f else pure Nothing
-      MaybeT $ return hf
-    else do
-      -- Could block here with a barrier rather than fail
-      b <- liftIO $ newBarrier
-      lift $ delayedAction (mkDelayedAction "OutOfDateHie" ("hie" :: T.Text, f) L.Info
-                              (do pm <- use_ GetParsedModule f
-                                  typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
-                                  liftIO $ signalBarrier b ()))
-      () <- MaybeT $ liftIO $ timeout 1 $ waitBarrier b
-      ncu <- mkUpdater
-      liftIO $ loadHieFile ncu hie_f
+      mbHieTimestamp <- either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime hie_f)
+      srcTimestamp   <- MaybeT (either (\(_ :: IOException) -> Nothing) Just <$> (liftIO $ try $ getModificationTime $ fromNormalizedFilePath f))
+
+      liftIO $ print (mbHieTimestamp, srcTimestamp, hie_f, normal_hie_f)
+      let isUpToDate
+            | Just d <- mbHieTimestamp = d > srcTimestamp
+            | otherwise = False
+
+      if isUpToDate
+        then do
+          upd <- mkUpdater
+          hf <- liftIO $ if isUpToDate then Just <$> loadHieFile upd hie_f else pure Nothing
+          MaybeT $ return hf
+        else do
+          -- If not on disk, wait for the barrier
+          -- Could block here with a barrier rather than fail
+          mhf <- liftIO $ timeout 1 $ waitBarrier (uptoDate hfr)
+          MaybeT $ pure $ join mhf
 
   hf <- liftIO $ whenMaybe isUpToDate (loadHieFile hie_f)
   return ([], hf)
@@ -410,27 +412,6 @@ getDependenciesRule =
         opts <- getIdeOptions
         let mbFingerprints = map (fingerprintString . fromNormalizedFilePath) allFiles <$ optShakeFiles opts
         return (fingerprintToBS . fingerprintFingerprints <$> mbFingerprints, ([], transitiveDeps depInfo file))
-
--- Source SpanInfo is used by AtPoint and Goto Definition.
-getSpanInfoRule :: Rules ()
-getSpanInfoRule =
-    define $ \GetSpanInfo file -> do
-        tc <- use_ TypeCheck file
-        packageState <- hscEnv <$> use_ GhcSession file
-        deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
-        let tdeps = transitiveModuleDeps deps
-#if MIN_GHC_API_VERSION(8,6,0) && !defined(GHC_LIB)
-        let parsedDeps = []
-#else
-        parsedDeps <- uses_ GetParsedModule tdeps
-#endif
-        ifaces <- uses_ GetModIface tdeps
-        (fileImports, _) <- use_ GetLocatedImports file
-        let imports = second (fmap artifactFilePath) <$> fileImports
-        x <- liftIO $ getSrcSpanInfos packageState imports tc parsedDeps (map hirModIface ifaces)
-        return ([], Just x)
-
-
 
 getHieFileRule :: Rules ()
 getHieFileRule =
@@ -706,7 +687,6 @@ mainRule = do
     reportImportCyclesRule
     getDependenciesRule
     typeCheckRule
-    getSpanInfoRule
     getHieFileRule
     getRefMapRule
     getDocMapRule
