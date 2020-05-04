@@ -170,7 +170,8 @@ getHomeHieFile f = do
 
   if isUpToDate
     then do
-      hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
+      ncu <- mkUpdater
+      hf <- liftIO $ if isUpToDate then Just <$> loadHieFile ncu hie_f else pure Nothing
       MaybeT $ return hf
     else do
       -- Could block here with a barrier rather than fail
@@ -180,7 +181,8 @@ getHomeHieFile f = do
                                   typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
                                   liftIO $ signalBarrier b ()))
       () <- MaybeT $ liftIO $ timeout 1 $ waitBarrier b
-      liftIO $ loadHieFile hie_f
+      ncu <- mkUpdater
+      liftIO $ loadHieFile ncu hie_f
 
   hf <- liftIO $ whenMaybe isUpToDate (loadHieFile hie_f)
   return ([], hf)
@@ -199,10 +201,11 @@ getPackageHieFile ide mod file = do
             hieFile <- liftIO $ optLocateHieFile optPkgLocationOpts pkgConfig mod
             path    <- liftIO $ optLocateSrcFile optPkgLocationOpts pkgConfig mod
             case (hieFile, path) of
-                (Just hiePath, Just modPath) -> MaybeT $
+                (Just hiePath, Just modPath) -> do
                     -- deliberately loaded outside the Shake graph
                     -- to avoid dependencies on non-workspace files
-                        liftIO $ Just . (, modPath) <$> loadHieFile hiePath
+                        ncu <- mkUpdater
+                        MaybeT $ liftIO $ Just . (, modPath) <$> loadHieFile ncu hiePath
                 _ -> MaybeT $ return Nothing
         _ -> MaybeT $ return Nothing
 

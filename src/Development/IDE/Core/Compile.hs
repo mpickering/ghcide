@@ -559,11 +559,9 @@ removePackageImports pkgs (L l h@(HsModule {hsmodImports}) ) = L l (h { hsmodImp
         _ -> (L l i)
     do_one_import l = l
 
-loadHieFile :: FilePath -> IO GHC.HieFile
-loadHieFile f = do
-        u <- mkSplitUniqSupply 'a'
-        let nameCache = initNameCache u []
-        fmap (GHC.hie_file_result . fst) $ GHC.readHieFile nameCache f
+loadHieFile :: Compat.NameCacheUpdater -> FilePath -> IO GHC.HieFile
+loadHieFile ncu f = do
+  GHC.hie_file_result <$> GHC.readHieFile ncu f
 
 -- | Retuns an up-to-date module interface if available.
 --   Assumes file exists.
