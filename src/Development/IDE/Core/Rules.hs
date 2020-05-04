@@ -39,6 +39,7 @@ import Development.IDE.Core.Compile
 import Development.IDE.Core.OfInterest
 import Development.IDE.Types.Options
 import Development.IDE.Spans.Calculate
+import Development.IDE.Spans.Documentation
 import Development.IDE.Import.DependencyInformation
 import Development.IDE.Import.FindImports
 import           Development.IDE.Core.FileExists
@@ -418,20 +419,59 @@ getSpanInfoRule =
         packageState <- hscEnv <$> use_ GhcSession file
         deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
         let tdeps = transitiveModuleDeps deps
-
--- When possible, rely on the haddocks embedded in our interface files
--- This creates problems on ghc-lib, see comment on 'getDocumentationTryGhc'
 #if MIN_GHC_API_VERSION(8,6,0) && !defined(GHC_LIB)
         let parsedDeps = []
 #else
         parsedDeps <- uses_ GetParsedModule tdeps
 #endif
-
         ifaces <- uses_ GetModIface tdeps
         (fileImports, _) <- use_ GetLocatedImports file
         let imports = second (fmap artifactFilePath) <$> fileImports
         x <- liftIO $ getSrcSpanInfos packageState imports tc parsedDeps (map hirModIface ifaces)
         return ([], Just x)
+
+
+
+getHieFileRule :: Rules ()
+getHieFileRule =
+    define $ \GetHieFile f -> do
+      tcm <- use_ TypeCheck f
+      case tmrHieFile tcm of
+        Just hf -> pure ([],Just hf)
+        Nothing -> do
+          hsc  <- hscEnv <$> use_ GhcSession f
+          liftIO $ generateAndWriteHieFile hsc (tmrModule tcm)
+
+getRefMapRule :: Rules ()
+getRefMapRule =
+    define $ \GetRefMap file -> do
+      hf <- use_ GetHieFile file
+      let asts = hie_asts hf
+          refmap = generateReferencesMap $ getAsts asts
+      return ([],Just $ PRefMap refmap)
+
+getDocMapRule :: Rules ()
+getDocMapRule =
+    define $ \GetDocMap file -> do
+      tc <- tmrModule <$> use_ TypeCheck file
+      hsc <- hscEnv <$> use_ GhcSession file
+      PRefMap rf <- use_ GetRefMap file
+
+      deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
+      let tdeps = transitiveModuleDeps deps
+
+-- When possible, rely on the haddocks embedded in our interface files
+-- This creates problems on ghc-lib, see comment on 'getDocumentationTryGhc'
+#if MIN_GHC_API_VERSION(8,6,0) && !defined(GHC_LIB)
+      let parsedDeps = []
+#else
+      parsedDeps <- uses_ GetParsedModule tdeps
+#endif
+
+      ifaces <- uses_ GetModIface tdeps
+
+      docMap <- liftIO $ evalGhcEnv hsc $ mkDocMap parsedDeps rf tc (map hirModIface ifaces)
+      return ([],Just $ PDocMap docMap)
 
 -- Typechecks a module.
 typeCheckRule :: Rules ()
@@ -483,11 +523,10 @@ typeCheckRuleDefinition file pm generateArtifacts = do
     res <- typecheckModule defer hsc (zipWith unpack mirs bytecodes) pm
     case res of
       (diags, Just (hsc,tcm)) | DoGenerateInterfaceFiles <- generateArtifacts -> do
-        diagsHie <- generateAndWriteHieFile hsc (tmrModule tcm)
+        (diagsHie,hf) <- generateAndWriteHieFile hsc (tmrModule tcm)
         diagsHi  <- generateAndWriteHiFile hsc tcm
-        return (diags <> diagsHi <> diagsHie, Just tcm)
-      (diags, res) ->
-        return (diags, snd <$> res)
+        return (diags <> diagsHi <> diagsHie, Just tcm{tmrHieFile=hf})
+      (diags, res) -> return (diags, snd <$> res)
  where
   unpack HiFileResult{..} bc = (hirModSummary, (hirModIface, bc))
   uses_th_qq dflags =
@@ -668,6 +707,9 @@ mainRule = do
     getDependenciesRule
     typeCheckRule
     getSpanInfoRule
+    getHieFileRule
+    getRefMapRule
+    getDocMapRule
     generateCoreRule
     generateByteCodeRule
     loadGhcSession

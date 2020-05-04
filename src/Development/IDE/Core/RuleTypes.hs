@@ -26,8 +26,9 @@ import Module (InstalledUnitId)
 import HscTypes (CgGuts, Linkable, HomeModInfo, ModDetails)
 
 import           Development.IDE.Spans.Type
+import           Development.IDE.Spans.Common
 import           Development.IDE.Import.FindImports (ArtifactsLocation)
-
+import Development.IDE.GHC.Compat (RefMap, HieFile)
 
 -- NOTATION
 --   Foo+ means Foo for the dependencies
@@ -52,6 +53,7 @@ type instance RuleResult GetModuleGraph = DependencyInformation
 data TcModuleResult = TcModuleResult
     { tmrModule     :: TypecheckedModule
     , tmrModInfo    :: HomeModInfo
+    , tmrHieFile    :: Maybe HieFile
     }
 instance Show TcModuleResult where
     show = show . pm_mod_summary . tm_parsed_module . tmrModule
@@ -80,6 +82,25 @@ type instance RuleResult TypeCheck = TcModuleResult
 
 -- | Information about what spans occur where, requires TypeCheck
 type instance RuleResult GetSpanInfo = SpansInfo
+type instance RuleResult GetHieFile = HieFile
+
+newtype PRefMap = PRefMap {getRefMap :: RefMap}
+instance NFData PRefMap where
+    rnf = rwhnf
+
+instance Show PRefMap where
+    show = const "refmap"
+
+type instance RuleResult GetRefMap = PRefMap
+
+newtype PDocMap = PDocMap {getDocMap :: DocMap}
+instance NFData PDocMap where
+    rnf = rwhnf
+
+instance Show PDocMap where
+    show = const "docmap"
+
+type instance RuleResult GetDocMap = PDocMap
 
 -- | Convert to Core, requires TypeCheck*
 type instance RuleResult GenerateCore = (SafeHaskellMode, CgGuts, ModDetails)
@@ -152,11 +173,30 @@ instance Hashable TypeCheck
 instance NFData   TypeCheck
 instance Binary   TypeCheck
 
+
+data GetHieFile = GetHieFile
+    deriving (Eq, Show, Typeable, Generic)
+instance Hashable GetHieFile
+instance NFData   GetHieFile
+instance Binary   GetHieFile
+
+data GetRefMap = GetRefMap
+    deriving (Eq, Show, Typeable, Generic)
+instance Hashable GetRefMap
+instance NFData   GetRefMap
+instance Binary   GetRefMap
+
 data GetSpanInfo = GetSpanInfo
     deriving (Eq, Show, Typeable, Generic)
 instance Hashable GetSpanInfo
 instance NFData   GetSpanInfo
 instance Binary   GetSpanInfo
+
+data GetDocMap = GetDocMap
+    deriving (Eq, Show, Typeable, Generic)
+instance Hashable GetDocMap
+instance NFData   GetDocMap
+instance Binary   GetDocMap
 
 data GenerateCore = GenerateCore
     deriving (Eq, Show, Typeable, Generic)
