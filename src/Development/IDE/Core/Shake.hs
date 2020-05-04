@@ -47,7 +47,7 @@ module Development.IDE.Core.Shake(
     OnDiskRule(..),
 
     workerThread, delay, DelayedAction, mkDelayedAction,
-    IdeAction(..), runIdeAction
+    IdeAction(..), runIdeAction, askShake, mkUpdater
     ) where
 
 import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
@@ -67,6 +67,7 @@ import qualified Data.Text as T
 import Data.Tuple.Extra
 import Data.Unique
 import Development.IDE.Core.Debouncer
+import Development.IDE.GHC.Compat ( NameCacheUpdater(..), upNameCache )
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Types.Logger hiding (Priority)
@@ -95,9 +96,14 @@ import Language.Haskell.LSP.Types
 import Control.Monad.IO.Class
 import Control.Monad.Reader
 import Control.Monad.Writer
+import Control.Monad.Trans.Maybe
 import qualified Data.HashPSQ as PQ
 import OpenTelemetry.Eventlog
 
+import Data.IORef
+import NameCache
+import UniqSupply
+import PrelInfo
 
 -- information we stash inside the shakeExtra field
 data ShakeExtras = ShakeExtras
@@ -119,6 +125,7 @@ data ShakeExtras = ShakeExtras
     ,inProgress :: Var (HMap.HashMap NormalizedFilePath Int)
     -- ^ How many rules are running for each file
     , queue :: ShakeQueue
+    , ideNc :: IORef NameCache
     }
 
 getShakeExtras :: Action ShakeExtras
@@ -524,6 +531,8 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
     inProgress <- newVar HMap.empty
     shakeAbort <- newMVar $ return ()
     shakeQueue <- newShakeQueue
+    us <- mkSplitUniqSupply 'r'
+    ideNc <- newIORef (initNameCache us knownKeyNames)
     shakeExtras <- do
         globals <- newVar HMap.empty
         state <- newVar HMap.empty
@@ -739,6 +748,11 @@ runIdeAction _herald s i = do
 
 askShake :: IdeAction ShakeExtras
 askShake = shakeExtras <$> ask
+
+mkUpdater :: MaybeT IdeAction NameCacheUpdater
+mkUpdater = do
+  ref <- lift $ ideNc <$> askShake
+  pure $ NCU (upNameCache ref)
 
 -- A (maybe) stale result now, and an up to date one later
 data FastResult a = FastResult { stale :: Maybe (a,PositionMapping), uptoDate :: Barrier (Maybe a)  }

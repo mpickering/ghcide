@@ -9,7 +9,8 @@
 module Development.IDE.GHC.Compat(
     getHeaderImports,
     HieFileResult(..),
-    HieFile,
+    HieFile(..),
+    NameCacheUpdater(..),
     hieExportNames,
     hie_module,
     mkHieFile,
@@ -39,7 +40,13 @@ module Development.IDE.GHC.Compat(
     Module.addBootSuffix,
     pattern ModLocation,
 
-    module GHC
+    upNameCache,
+
+    module GHC,
+#if MIN_GHC_API_VERSION(8,8,0)
+    module HieTypes,
+    module HieUtils,
+#endif
     ) where
 
 import StringBuffer
@@ -48,6 +55,9 @@ import FieldLabel
 import Fingerprint (Fingerprint)
 import qualified Module
 import Packages
+import Data.IORef
+import HscTypes
+import NameCache
 
 import qualified GHC
 import GHC hiding (ClassOpSig, DerivD, ForD, IEThingAll, IEThingWith, InstD, TyClD, ValD, ModLocation)
@@ -63,8 +73,10 @@ import HscTypes (mi_mod_hash)
 #if MIN_GHC_API_VERSION(8,8,0)
 import Control.Applicative ((<|>))
 import Development.IDE.GHC.HieAst (mkHieFile)
-import HieBin
+import Development.IDE.GHC.HieBin
+import HieUtils
 import HieTypes
+import IfaceEnv
 
 supportsHieFiles :: Bool
 supportsHieFiles = True
@@ -98,6 +110,13 @@ hPutStringBuffer hdl (StringBuffer buf len cur)
 
 #endif
 
+upNameCache :: IORef NameCache -> (NameCache -> (NameCache, c)) -> IO c
+#if !MIN_GHC_API_VERSION(8,8,0)
+upNameCache ref upd_fn
+  = atomicModifyIORef' ref upd_fn
+#else
+upNameCache = updNameCache
+#endif
 #if !MIN_GHC_API_VERSION(8,6,0)
 includePathsGlobal, includePathsQuote :: [String] -> [String]
 includePathsGlobal = id
@@ -234,7 +253,7 @@ instance Binary HieFile where
 data HieFileResult = HieFileResult { hie_file_result :: HieFile }
 
 writeHieFile :: FilePath -> HieFile -> IO ()
-readHieFile :: NameCache -> FilePath -> IO (HieFileResult, ())
+readHieFile :: NameCacheUpdater -> FilePath -> IO HieFileResult
 supportsHieFiles :: Bool
 
 #if MIN_GHC_API_VERSION(8,6,0)
@@ -246,9 +265,8 @@ writeHieFile fp hie = do
 
 readHieFile nc fp = do
   bh <- readBinMem fp
-  nc' <- newIORef nc
-  hie_file <- getWithUserData (NCU (atomicModifyIORef' nc')) bh
-  return (HieFileResult hie_file, ())
+  hie_file <- getWithUserData nc bh
+  return (HieFileResult hie_file)
 
 supportsHieFiles = True
 
