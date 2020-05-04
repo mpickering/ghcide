@@ -298,12 +298,14 @@ data DelayedActionExtra = DelayedActionExtra { _actionInternalId :: Int
 type DelayedAction a = DelayedActionX (Action a)
 type DelayedActionInternal = DelayedActionX DelayedActionExtra
 
+{-# COMPLETE DelayedActionInternal#-}
 pattern DelayedActionInternal :: String -> Key -> Logger.Priority -> Action () -> Int -> QPriority -> IO Bool -> DelayedActionX DelayedActionExtra
 pattern DelayedActionInternal {actionInternalName, actionInternalKey, actionInternalPriority, getAction
                               , actionId, actionQPriority, actionFinished}
                               = DelayedActionX actionInternalName actionInternalKey actionInternalPriority
                                     (DelayedActionExtra actionId actionQPriority actionFinished getAction)
 
+{-# COMPLETE DelayedAction#-}
 pattern DelayedAction :: String -> Key -> Logger.Priority -> Action a -> DelayedAction a
 pattern DelayedAction a b c d = DelayedActionX a b c d
 
