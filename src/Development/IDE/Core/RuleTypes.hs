@@ -25,7 +25,6 @@ import           GHC
 import Module (InstalledUnitId)
 import HscTypes (CgGuts, Linkable, HomeModInfo, ModDetails)
 
-import           Development.IDE.Spans.Type
 import           Development.IDE.Spans.Common
 import           Development.IDE.Import.FindImports (ArtifactsLocation)
 import Development.IDE.GHC.Compat (RefMap, HieFile)
@@ -81,7 +80,6 @@ instance Show HiFileResult where
 type instance RuleResult TypeCheck = TcModuleResult
 
 -- | Information about what spans occur where, requires TypeCheck
-type instance RuleResult GetSpanInfo = SpansInfo
 type instance RuleResult GetHieFile = HieFile
 
 newtype PRefMap = PRefMap {getRefMap :: RefMap}
@@ -173,7 +171,6 @@ instance Hashable TypeCheck
 instance NFData   TypeCheck
 instance Binary   TypeCheck
 
-
 data GetHieFile = GetHieFile
     deriving (Eq, Show, Typeable, Generic)
 instance Hashable GetHieFile
@@ -186,14 +183,9 @@ instance Hashable GetRefMap
 instance NFData   GetRefMap
 instance Binary   GetRefMap
 
-data GetSpanInfo = GetSpanInfo
-    deriving (Eq, Show, Typeable, Generic)
-instance Hashable GetSpanInfo
-instance NFData   GetSpanInfo
-instance Binary   GetSpanInfo
-
 data GetDocMap = GetDocMap
     deriving (Eq, Show, Typeable, Generic)
+
 instance Hashable GetDocMap
 instance NFData   GetDocMap
 instance Binary   GetDocMap
