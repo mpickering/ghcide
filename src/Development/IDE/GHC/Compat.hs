@@ -46,6 +46,9 @@ module Development.IDE.GHC.Compat(
 #if MIN_GHC_API_VERSION(8,8,0)
     module HieTypes,
     module HieUtils,
+#else
+    module Development.IDE.GHC.HieTypes,
+    module Development.IDE.GHC.HieUtils,
 #endif
     ) where
 
