@@ -6,6 +6,7 @@ extra-deps:
 - haskell-lsp-types-0.22.0.0
 - lsp-test-0.10.3.0
 - ghc-check-0.3.0.1
+- opentelemetry-0.3.2
 
 nix:
   packages: [zlib]
