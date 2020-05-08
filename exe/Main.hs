@@ -16,6 +16,7 @@ import Module
 import Arguments
 import Data.Maybe
 import Data.List.Extra
+import Data.Function
 import System.FilePath
 import Control.Concurrent.Extra
 import Control.Exception
@@ -271,16 +272,21 @@ loadSession dir = liftIO $ do
                 -- We will modify the unitId and DynFlags used for
                 -- compilation but these are the true source of
                 -- information.
-                new_deps = (thisInstalledUnitId df, df, targets, cfp, dep_info) : maybe [] snd oldDeps
+                new_deps = (thisInstalledUnitId df, df, targets, cfp, opts, dep_info) : maybe [] snd oldDeps
                 -- Get all the unit-ids for things in this component
-                inplace = map (\(a, _, _, _, _) -> a) new_deps
+                inplace = map (\(a, _, _, _, _, _) -> a) new_deps
+
+            -- Note [Avoiding bad interface files]
+            new_deps' <- forM new_deps $ \(uid, df1, ts, cfp, opts, di) -> do
+                -- let (uid, (df1, _target, ts, cfp, opts, di)) = do_one componentInfo
                 -- Remove all inplace dependencies from package flags for
                 -- components in this HscEnv
-                rearrange (uid, (df, uids), ts, cfp, di) = (uid, (df, uids, ts, cfp, di))
-                do_one (uid,df, ts, cfp, di) = rearrange (uid, removeInplacePackages inplace df, ts, cfp, di)
+                let (df2, uids) = removeInplacePackages inplace df1
+                let prefix = show $ thisInstalledUnitId df1
+                df <- setCacheDir prefix (sort $ map show uids) opts df2
                 -- All deps, but without any packages which are also loaded
                 -- into memory
-                new_deps' = map do_one new_deps
+                pure $ (uid, (df, uids, ts, cfp, opts, di))
             -- Make a new HscEnv, we have to recompile everything from
             -- scratch again (for now)
             -- It's important to keep the same NameCache though for reasons
@@ -310,14 +316,14 @@ loadSession dir = liftIO $ do
         -- TODO Handle the case where there is no hie.yaml
         -- Make a map from unit-id to DynFlags, this is used when trying to
         -- resolve imports.
-        let uids = map (\(iuid, (df, _uis, _targets, _cfp, _di)) -> (iuid, df)) (new : old_deps)
+        let uids = map (\(iuid, (df, _uis, _targets, _cfp, _opts, _di)) -> (iuid, df)) (new : old_deps)
 
         -- For each component, now make a new HscEnvEq which contains the
         -- HscEnv for the hie.yaml file but the DynFlags for that component
         --
         -- Then look at the targets for each component and create a map
         -- from FilePath to the HscEnv
-        let new_cache (_iuid, (df, _uis, targets, cfp, di)) =  do
+        let new_cache (_iuid, (df, _uis, targets, cfp, _opts, di)) =  do
               let hscEnv' = hscEnv { hsc_dflags = df
                                    , hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
 
@@ -404,8 +410,65 @@ loadSession dir = liftIO $ do
                 _ <- wait as
                 getOptions file
 
+{- Note [Avoiding bad interface files]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Originally, we set the cache directory for the various components once
+on the first occurrence of the component.
+This works fine if these components have no references to each other,
+but you have components that depend on each other, the interface files are
+updated for each component.
+After restarting the session and only opening the component that depended
+on the other, suddenly the interface files of this component are stale.
+However, from the point of view of `ghcide`, they do not look stale,
+thus, not regenerated and the IDE shows weird errors such as:
+```
+typecheckIface
+Declaration for Rep_ClientRunFlags
+Axiom branches Rep_ClientRunFlags:
+  Failed to load interface for ‘Distribution.Simple.Flag’
+  Use -v to see a list of the files searched for.
+```
+and
+```
+expectJust checkFamInstConsistency
+CallStack (from HasCallStack):
+  error, called at compiler\\utils\\Maybes.hs:55:27 in ghc:Maybes
+  expectJust, called at compiler\\typecheck\\FamInst.hs:461:30 in ghc:FamInst
+```
+
+To mitigate this, we set the cache directory for each component dependent
+on the components of the current `HscEnv`, additionally to the component options
+of the respective components.
+Assume two components, c1, c2, where c2 depends on c1, and the options of the
+respective components are co1, co2.
+If we want to load component c2, followed by c1, we set the cache directory for
+each component in this way:
+
+  * Load component c2
+    * (Cache Directory State)
+        - name of c2 + co2
+  * Load component c1
+    * (Cache Directory State)
+        - name of c2 + name of c1 + co2
+        - name of c2 + name of c1 + co1
+
+Overall, we created three cache directories. If we opened c1 first, then we
+create a fourth cache directory.
+This makes sure that interface files are always correctly updated.
+
+Since this causes a lot of recompilation, we only update the cache-directory,
+if the dependencies of a component have really changed.
+E.g. when you load two executables, they can not depend on each other. They
+should be filtered out, such that we dont have to re-compile everything.
+-}
 
 
+setCacheDir :: MonadIO m => String -> [String] -> ComponentOptions -> DynFlags -> m DynFlags
+setCacheDir prefix hscComponents comps dflags = do
+    cacheDir <- liftIO $ getCacheDir prefix (hscComponents ++ componentOptions comps)
+    pure $ dflags
+          & setHiDir cacheDir
+          & setDefaultHieDir cacheDir
 
 
 checkDependencyInfo :: Map.Map FilePath (Maybe UTCTime) -> IO Bool
@@ -463,16 +526,13 @@ memoIO op = do
 
 setOptions :: GhcMonad m => ComponentOptions -> DynFlags -> m (DynFlags, [Target])
 setOptions (ComponentOptions theOpts _) dflags = do
-    cacheDir <- liftIO $ getCacheDir theOpts
-    (dflags', targets) <- addCmdOpts theOpts dflags
+    (dflags_, targets) <- addCmdOpts theOpts dflags
     let dflags'' =
           -- disabled, generated directly by ghcide instead
           flip gopt_unset Opt_WriteInterface $
           -- disabled, generated directly by ghcide instead
           -- also, it can confuse the interface stale check
           dontWriteHieFiles $
-          setHiDir cacheDir $
-          setDefaultHieDir cacheDir $
           setIgnoreInterfacePragmas $
           setLinkerOptions $
           disableOptimisation dflags'
@@ -505,12 +565,12 @@ setHiDir f d =
     -- override user settings to avoid conflicts leading to recompilation
     d { hiDir      = Just f}
 
-getCacheDir :: [String] -> IO FilePath
-getCacheDir opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> opts_hash)
+getCacheDir :: String -> [String] -> IO FilePath
+getCacheDir prefix opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> prefix ++ "-" ++ opts_hash)
     where
         -- Create a unique folder per set of different GHC options, assuming that each different set of
         -- GHC options will create incompatible interface files.
-        opts_hash = B.unpack $ encode $ H.finalize $ H.updates H.init (map B.pack opts)
+        opts_hash = B.unpack $ encode $ H.finalize $ H.updates H.init $ (map B.pack opts)
 
 -- Prefix for the cache path
 cacheDir :: String
