@@ -50,7 +50,7 @@ import qualified System.Directory.Extra as IO
 import System.Environment
 import System.IO
 import System.Exit
-import HIE.Bios.Environment (addCmdOpts)
+import HIE.Bios.Environment (addCmdOpts, makeDynFlagsAbsolute)
 import Paths_ghcide
 import Development.GitRev
 import Development.Shake (Action,  action)
@@ -311,10 +311,10 @@ loadSession dir = do
             -- Modify the map so the hieYaml now maps to the newly created
             -- HscEnv
             -- Returns
-            -- * the new HscEnv so it can be used to modify the
+            --  * the new HscEnv so it can be used to modify the
             --   FilePath -> HscEnv map
-            -- * The information for the new component which caused this cache miss
-            -- * The modified information (without -inplace flags) for
+            --  * The information for the new component which caused this cache miss
+            --  * The modified information (without -inplace flags) for
             --   existing packages
             pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps', tail new_deps'))
 
@@ -488,9 +488,10 @@ memoIO op = do
             Just res -> return (mp, res)
 
 setOptions :: GhcMonad m => ComponentOptions -> DynFlags -> m (DynFlags, [Target])
-setOptions (ComponentOptions theOpts _) dflags = do
+setOptions (ComponentOptions theOpts compRoot _) dflags = do
     cacheDir <- liftIO $ getCacheDir theOpts
-    (dflags', targets) <- addCmdOpts theOpts dflags
+    (dflags_, targets) <- addCmdOpts theOpts dflags
+    let dflags' = makeDynFlagsAbsolute compRoot dflags_
     let dflags'' =
           -- disabled, generated directly by ghcide instead
           flip gopt_unset Opt_WriteInterface $
