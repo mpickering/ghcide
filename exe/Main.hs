@@ -53,7 +53,7 @@ import System.Exit
 import HIE.Bios.Environment (addCmdOpts, makeDynFlagsAbsolute)
 import Paths_ghcide
 import Development.GitRev
-import Development.Shake (Action,  action)
+import Development.Shake (Action)
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as Map
@@ -71,8 +71,8 @@ import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
 import DynFlags (PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
-import           GHC.Check                      (runTimeVersion, compileTimeVersionFromLibdir)
-import Debug.Trace
+import           GHC.Check                      (VersionCheck(..), makeGhcVersionChecker)
+-- import Debug.Trace
 
 import           HIE.Bios.Cradle
 import           HIE.Bios.Types
@@ -87,7 +87,7 @@ import Utils
 ghcideVersion :: IO String
 ghcideVersion = do
   path <- getExecutablePath
-  let gitHashSection = case "" of
+  let gitHashSection = case $(gitHash) of
         x | x == "UNKNOWN" -> ""
         x -> " (GIT hash: " <> x <> ")"
   return $ "ghcide version: " <> showVersion version
@@ -335,7 +335,8 @@ loadSession dir = do
               let hscEnv' = hscEnv { hsc_dflags = df
                                    , hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
 
-              versionMismatch <- evalGhcEnv hscEnv' checkGhcVersion
+              -- versionMismatch <- evalGhcEnv hscEnv' checkGhcVersion
+              versionMismatch <- checkGhcVersion
               henv <- case versionMismatch of
                         Just mismatch -> return mismatch
                         Nothing -> newHscEnvEq hscEnv' uids
@@ -543,12 +544,17 @@ getCacheDir opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> opts_hash)
 cacheDir :: String
 cacheDir = "ghcide"
 
---compileTimeGhcVersion :: Version
---compileTimeGhcVersion = $$(compileTimeVersionFromLibdir getLibdir)
+ghcVersionChecker :: IO VersionCheck
+ghcVersionChecker = $$(makeGhcVersionChecker (pure <$> getLibdir))
 
-checkGhcVersion :: Ghc (Maybe HscEnvEq)
+checkGhcVersion :: IO (Maybe HscEnvEq)
 checkGhcVersion = do
-    v <- runTimeVersion
-    return $ if True
-        then Nothing
-        else undefined
+    res <- ghcVersionChecker
+    case res of
+        Failure err -> do
+          putStrLn $ "Error while checking GHC version: " ++ show err
+          return Nothing
+        Mismatch {..} ->
+          return $ Just GhcVersionMismatch {..}
+        _ ->
+          return Nothing

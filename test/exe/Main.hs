@@ -1353,11 +1353,11 @@ findDefinitionAndHoverTests = let
 
   mkFindTests tests = testGroup "get"
     [ testGroup "definition" $ mapMaybe fst tests
-    , testGroup "hover"      $ mapMaybe snd tests
-    , testGroup "type-definition" $ typeDefinitionTests ]
+    , testGroup "hover"      $ mapMaybe snd tests ]
+  --   , testGroup "type-definition" $ typeDefinitionTests ]
 
-  typeDefinitionTests = [ tst (getTypeDefinitions, checkDefs) dcL7 tcData "Saturated data con"
-                        , tst (getTypeDefinitions, checkDefs) opL16 [ExpectNoDefinitions] "Polymorphic variable"]
+  -- typeDefinitionTests = [ tst (getTypeDefinitions, checkDefs) dcL7 tcData "Saturated data con"
+  --                       , tst (getTypeDefinitions, checkDefs) opL16 [ExpectNoDefinitions] "Polymorphic variable"]
 
   test runDef runHover look expect = testM runDef runHover look (return expect)
 

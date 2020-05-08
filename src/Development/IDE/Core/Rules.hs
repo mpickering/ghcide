@@ -1,9 +1,9 @@
 -- Copyright (c) 2019 The DAML Authors. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE CPP                   #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 #include "ghc-api-version.h"
 
@@ -39,6 +39,7 @@ import Control.Monad.Trans.Maybe
 import Development.IDE.Core.Compile
 import Development.IDE.Core.OfInterest
 import Development.IDE.Types.Options
+-- import Development.IDE.Spans.Calculate
 import Development.IDE.Spans.Documentation
 import Development.IDE.Import.DependencyInformation
 import Development.IDE.Import.FindImports
@@ -49,19 +50,23 @@ import Development.IDE.Types.Location
 import Development.IDE.GHC.Compat hiding (parseModule, typecheckModule)
 import Development.IDE.GHC.Util
 import Development.IDE.GHC.WithDynFlags
+import Data.Coerce
 import Data.Either.Extra
 import qualified Development.IDE.Types.Logger as L
 import Data.Maybe
 import           Data.Foldable
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntMap.Strict (IntMap)
+import qualified Data.IntSet as IntSet
 import Data.List
+import Data.Ord
 import qualified Data.Set                                 as Set
 import qualified Data.HashSet                             as HS
 import qualified Data.Text                                as T
 import           Development.IDE.GHC.Error
 import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
+-- import Development.IDE.Spans.Type
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Core.PositionMapping
 import           Language.Haskell.LSP.Types
@@ -195,8 +200,8 @@ getHomeHieFile f = do
           mhf <- liftIO $ timeout 1 $ waitBarrier (uptoDate hfr)
           MaybeT $ pure $ join mhf
 
-  hf <- liftIO $ whenMaybe isUpToDate (loadHieFile hie_f)
-  return ([], hf)
+  -- hf <- liftIO $ whenMaybe isUpToDate (loadHieFile hie_f)
+  -- return ([], hf)
 
 getPackageHieFile :: IdeState
                   -> Module             -- ^ Package Module to load .hie file for
@@ -308,12 +313,12 @@ getLocatedImportsRule =
 
 -- | Given a target file path, construct the raw dependency results by following
 -- imports recursively.
-rawDependencyInformation :: NormalizedFilePath -> Action RawDependencyInformation
-rawDependencyInformation f = do
-    let initialArtifact = ArtifactsLocation f (ModLocation (Just $ fromNormalizedFilePath f) "" "") False
-        (initialId, initialMap) = getPathId initialArtifact emptyPathIdMap
-    (rdi, ss) <- go (IntSet.singleton $ getFilePathId initialId)
-                    (RawDependencyInformation IntMap.empty initialMap IntMap.empty, IntMap.empty)
+rawDependencyInformation :: [NormalizedFilePath] -> Action RawDependencyInformation
+rawDependencyInformation fs = do
+--    let initialArtifact = ArtifactsLocation f (ModLocation (Just $ fromNormalizedFilePath f) "" "") False
+--        (initialId, initialMap) = getPathId initialArtifact emptyPathIdMap
+    (_, rdi, ss) <- go fs
+                    ((RawDependencyInformation IntMap.empty emptyPathIdMap IntMap.empty), IntMap.empty)
     let bm = IntMap.foldrWithKey (updateBootMap rdi) IntMap.empty ss
     return (rdi { rawBootMap = bm })
   where
