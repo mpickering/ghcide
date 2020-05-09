@@ -210,16 +210,16 @@ showEvent lock (EventFileDiagnostics (toNormalizedFilePath' -> file) diags) =
 showEvent lock e = withLock lock $ print e
 
 
-cradleToSessionOpts :: Cradle a -> FilePath -> IO ComponentOptions
+cradleToSessionOpts :: Cradle a -> FilePath -> IO (Either [CradleError] ComponentOptions)
 cradleToSessionOpts cradle file = do
     let showLine s = putStrLn ("> " ++ s)
     cradleRes <- runCradle (cradleOptsProg cradle) showLine file
     opts <- case cradleRes of
-        CradleSuccess r -> pure r
-        CradleFail err -> throwIO err
-        -- TODO Rather than failing here, we should ignore any files that use this cradle.
-        -- That will require some more changes.
-        CradleNone -> fail "'none' cradle is not yet supported"
+        CradleSuccess r -> pure (Right r)
+        CradleFail err -> return (Left [err])
+        -- For the None cradle perhaps we still want to report an Info
+        -- message about the fact that the file is being ignored.
+        CradleNone -> return (Left [])
     pure opts
 
 emptyHscEnv :: IORef NameCache -> IO HscEnv
@@ -249,7 +249,7 @@ setNameCache nc hsc = hsc { hsc_NC = nc }
 -- This is the key function which implements multi-component support. All
 -- components mapping to the same hie,yaml file are mapped to the same
 -- HscEnv which is updated as new components are discovered.
-loadSession :: FilePath -> Action (FilePath -> Action HscEnvEq)
+loadSession :: FilePath -> Action (FilePath -> Action (IdeResult HscEnvEq))
 loadSession dir = do
   nc <- ideNc <$> getShakeExtras
   liftIO $ do
@@ -346,7 +346,7 @@ loadSession dir = do
               henv <- case versionMismatch of
                         Just mismatch -> return mismatch
                         Nothing -> newHscEnvEq hscEnv' uids
-              let res = (henv, di)
+              let res = (([], Just henv), di)
               print res
 
               let is = importPaths df
@@ -398,10 +398,19 @@ loadSession dir = do
                 void $ forkIO $ do
                   putStrLn $ "Consulting the cradle for " <> show file
                   cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
-                  opts <- cradleToSessionOpts cradle cfp
-                  print opts
-                  (cs, res)<- session (hieYaml, toNormalizedFilePath' cfp, opts)
-                  signalBarrier finished_barrier (cs, fst res)
+                  eopts <- cradleToSessionOpts cradle cfp
+                  print eopts
+                  case eopts of
+                    Right opts -> do
+                      (cs, res) <- session (hieYaml, toNormalizedFilePath' cfp, opts)
+                      signalBarrier finished_barrier (cs, fst res)
+                    Left err -> do
+                      dep_info <- getDependencyInfo ([fp | Just fp <- [hieYaml]])
+                      let ncfp = toNormalizedFilePath' cfp
+                      let res = (map (renderCradleError ncfp) err, Nothing)
+                      modifyVar_ fileToFlags $ \var -> do
+                        pure $ Map.insertWith HM.union hieYaml (HM.singleton ncfp (res, dep_info)) var
+                      signalBarrier finished_barrier ([(ncfp, (res, dep_info) )], res)
                 waitBarrier finished_barrier
 
     dummyAs <- async $ return (error "Uninitialised")
@@ -496,6 +505,11 @@ setCacheDir prefix hscComponents comps dflags = do
     pure $ dflags
           & setHiDir cacheDir
           & setDefaultHieDir cacheDir
+
+
+renderCradleError :: NormalizedFilePath -> CradleError -> FileDiagnostic
+renderCradleError nfp (CradleError _ec t) =
+  ideErrorText nfp (T.unlines (map T.pack t))
 
 
 checkDependencyInfo :: Map.Map FilePath (Maybe UTCTime) -> IO Bool
