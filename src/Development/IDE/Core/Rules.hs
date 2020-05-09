@@ -480,7 +480,7 @@ instance Hashable GhcSessionIO
 instance NFData   GhcSessionIO
 instance Binary   GhcSessionIO
 
-newtype GhcSessionFun = GhcSessionFun (FilePath -> Action HscEnvEq)
+newtype GhcSessionFun = GhcSessionFun (FilePath -> Action (IdeResult HscEnvEq))
 instance Show GhcSessionFun where show _ = "GhcSessionFun"
 instance NFData GhcSessionFun where rnf !_ = ()
 
@@ -498,9 +498,10 @@ loadGhcSession = do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
         alwaysRerun
         val <- fun $ fromNormalizedFilePath file
+
         -- TODO: What was this doing before?
 --        opts <- getIdeOptions
-        return (Just (BS.pack $ show $ hash val), ([], Just val))
+        return (Just (BS.pack (show ( hash (snd val)))), val)
 
 getHiFileRule :: Rules ()
 getHiFileRule = defineEarlyCutoff $ \GetHiFile f -> do
