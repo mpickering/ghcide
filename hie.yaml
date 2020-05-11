@@ -2,6 +2,8 @@ cradle:
   cabal:
     - path: "./src"
       component: "ghcide:lib:ghcide"
+    - path: "./src-lib"
+      component: "ghcide:lib:ghcide-lib"
     - path: "./exe"
       component: "ghcide:exe:ghcide"
     - path: "./test"

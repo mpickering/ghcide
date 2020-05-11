@@ -1,4 +1,5 @@
-module Utils where
+module Development.IDE.LibDir where
+-- This module exists purely to keep the TH stage restriction happy
 
 import qualified GHC.Paths
 import System.Environment
