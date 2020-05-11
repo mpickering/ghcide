@@ -47,8 +47,6 @@ library
         haskell-lsp-types == 0.22.*,
         haskell-lsp == 0.22.*,
         mtl,
-        network-uri,
-        prettyprinter-ansi-terminal,
         prettyprinter-ansi-terminal,
         prettyprinter,
         regex-tdfa >= 1.3.1.0,
@@ -63,7 +61,6 @@ library
         transformers,
         unordered-containers >= 0.2.10.0,
         utf8-string,
-        hslogger,
         psqueues,
         opentelemetry
     if flag(ghc-lib)
@@ -172,7 +169,24 @@ library
 library ghcide-rules
     default-language:   Haskell2010
     build-depends:
-        base
+        async,
+        base,
+        base16-bytestring,
+        bytestring,
+        containers,
+        cryptohash-sha1,
+        directory,
+        extra,
+        filepath,
+        ghc-check,
+        ghc-paths,
+        ghcide,
+        haskell-lsp,
+        hie-bios,
+        shake,
+        text,
+        time,
+        unordered-containers
 
     if flag(ghc-lib)
       build-depends:
@@ -193,9 +207,11 @@ library ghcide-rules
       c-sources:
         cbits/getmodtime.c
     hs-source-dirs:
-        src
+        src-lib
     exposed-modules:
-        Development.IDE.Compat
+        Development.IDE.BiosRules
+        Development.IDE.LibDir
+        Paths_ghcide
     ghc-options: -Wall -Wno-name-shadowing
 
 
@@ -225,36 +241,18 @@ executable ghcide
                 "-with-rtsopts=-I0 -qg -A128M"
     main-is: Main.hs
     build-depends:
-        time,
         async,
-        hslogger,
-        aeson,
         base == 4.*,
-        binary,
-        base16-bytestring >=0.1.1 && <0.2,
-        bytestring,
-        containers,
-        cryptohash-sha1 >=0.11.100 && <0.12,
         data-default,
-        deepseq,
-        directory,
         extra,
-        filepath,
-        ghc-check >= 0.3.0.1,
-        ghc-paths,
-        ghc,
-        gitrev,
-        hashable,
-        haskell-lsp,
-        haskell-lsp-types,
-        hie-bios >= 0.5.0 && < 0.6,
         ghcide,
+        ghcide-rules,
+        haskell-lsp,
+        hie-bios >= 0.5.0 && < 0.6,
         optparse-applicative,
-        shake,
         text,
         unordered-containers
     other-modules:
-        Utils
         Arguments
         Paths_ghcide
 

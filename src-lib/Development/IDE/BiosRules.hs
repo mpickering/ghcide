@@ -2,88 +2,70 @@
 -- SPDX-License-Identifier: Apache-2.0
 {-# OPTIONS_GHC -Wno-dodgy-imports #-} -- GHC no longer exports def in GHC 8.6 and above
 {-# LANGUAGE CPP #-} -- To get precise GHC version
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ViewPatterns #-}
 
-module Main(main) where
 
-import Data.Time.Clock (UTCTime)
-import Linker (initDynLinker)
-import Data.IORef
-import NameCache
-import Packages
-import Module
-import Arguments
-import Data.Maybe
-import Data.List.Extra
-import System.FilePath
+module Development.IDE.BiosRules
+    (
+      ghcideVersion
+    , expandFiles
+    , showEvent
+    , loadSession
+    ) where
+
+import Control.Concurrent.Async
 import Control.Concurrent.Extra
 import Control.Exception
 import Control.Monad.Extra
 import Control.Monad.IO.Class
-import Data.Default
-import System.Time.Extra
-import Development.IDE.Core.Debouncer
-import Development.IDE.Core.FileStore
-import Development.IDE.Core.OfInterest
-import Development.IDE.Core.Service
-import Development.IDE.Core.Rules
-import Development.IDE.Core.Shake
-import Development.IDE.Core.RuleTypes
-import Development.IDE.LSP.Protocol
-import Development.IDE.Types.Location
-import Development.IDE.Types.Diagnostics
-import Development.IDE.Types.Options
-import Development.IDE.Types.Logger
-import Development.IDE.GHC.Util
-import Development.IDE.Plugin
-import Development.IDE.Plugin.Completions as Completions
-import Development.IDE.Plugin.CodeAction as CodeAction
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import qualified Language.Haskell.LSP.Core as LSP
-import Language.Haskell.LSP.Messages
-import Language.Haskell.LSP.Types (LspId(IdInt))
-import Data.Version
-import Development.IDE.LSP.LanguageServer
-import qualified System.Directory.Extra as IO
-import System.Environment
-import System.IO
-import System.Exit
-import HIE.Bios.Environment (addCmdOpts, makeDynFlagsAbsolute)
-import Paths_ghcide
-import Development.GitRev
-import Development.Shake (Action,  action)
-import qualified Data.HashSet as HashSet
-import qualified Data.HashMap.Strict as HM
-import qualified Data.Map.Strict as Map
-import Data.Either
---import Outputable (pprTraceM, ppr, text)
 import qualified Crypto.Hash.SHA1               as H
-import qualified Data.ByteString.Char8          as B
 import           Data.ByteString.Base16         (encode)
-import Control.Concurrent.Async
-
+import qualified Data.ByteString.Char8          as B
+import Data.Either
+import qualified Data.HashMap.Strict as HM
+import Data.IORef
+import Data.List.Extra
+import qualified Data.Map.Strict as Map
+import Data.Maybe
+import qualified Data.Text.IO as T
+import Data.Time.Clock (UTCTime)
+import Data.Version
+import Development.IDE.Core.RuleTypes
+import Development.IDE.Core.Shake
+import Development.IDE.GHC.Util
+import Development.IDE.LSP.Protocol
+import Development.IDE.LibDir
+import Development.IDE.Types.Diagnostics
+import Development.IDE.Types.Location
+import Development.Shake (Action)
 import           DynFlags                       (gopt_set, gopt_unset,
                                                  updOptLevel)
-
-import GhcMonad
-import HscTypes (HscEnv(..), ic_dflags)
 import DynFlags (PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
 import           GHC.Check                      ( VersionCheck(..), makeGhcVersionChecker )
-
 import           HIE.Bios.Cradle
+import HIE.Bios.Environment (addCmdOpts, makeDynFlagsAbsolute)
 import           HIE.Bios.Types
+import HscTypes (HscEnv(..), ic_dflags)
+import Language.Haskell.LSP.Messages
+import Linker (initDynLinker)
+import Module
+import NameCache
+import Packages
+import Paths_ghcide
 import System.Directory
+import qualified System.Directory.Extra as IO
+import System.Environment
+import System.FilePath
 
-import Utils
+-- import Debug.Trace
 
-import Debug.Trace
 
---import Rules
---import RuleTypes
---
+-- ---------------------------------------------------------------------
 
 ghcideVersion :: IO String
 ghcideVersion = do
@@ -96,90 +78,6 @@ ghcideVersion = do
              <> ") (PATH: " <> path <> ")"
              <> gitHashSection
 
-main :: IO ()
-main = do
-    -- WARNING: If you write to stdout before runLanguageServer
-    --          then the language server will not work
-    Arguments{..} <- getArguments
-
-    if argsVersion then ghcideVersion >>= putStrLn >> exitSuccess
-    else hPutStrLn stderr {- see WARNING above -} =<< ghcideVersion
-
-    -- lock to avoid overlapping output on stdout
-    lock <- newLock
-    let logger p = Logger $ \pri msg -> when (pri >= p) $ withLock lock $
-            T.putStrLn $ T.pack ("[" ++ upper (show pri) ++ "] ") <> msg
-
-    whenJust argsCwd IO.setCurrentDirectory
-
-    dir <- IO.getCurrentDirectory
-    command <- makeLspCommandId "typesignature.add"
-
-    let plugins = Completions.plugin <> CodeAction.plugin
-        onInitialConfiguration = const $ Right ()
-        onConfigurationChange  = const $ Right ()
-        options = def { LSP.executeCommandCommands = Just [command]
-                      , LSP.completionTriggerCharacters = Just "."
-                      }
-
-    if argLSP then do
-        t <- offsetTime
-        hPutStrLn stderr "Starting LSP server..."
-        hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
-        runLanguageServer options (pluginHandler plugins) onInitialConfiguration onConfigurationChange $ \getLspId event vfs caps -> do
-            t <- t
-            hPutStrLn stderr $ "Started LSP server in " ++ showDuration t
-            let options = (defaultIdeOptions $ loadSession dir)
-                    { optReportProgress = clientSupportsProgress caps
-                    , optShakeProfiling = argsShakeProfiling
-                    , optTesting        = argsTesting
-                    , optThreads        = argsThreads
-                    , optInterfaceLoadingDiagnostics = argsTesting
-                    }
-                logLevel = if argsVerbose then minBound else Info
-            debouncer <- newAsyncDebouncer
-            fst <$> initialise caps (mainRule >> pluginRules plugins)
-                      getLspId event (logger logLevel) debouncer options vfs
-    else do
-        -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
-        hSetEncoding stdout utf8
-        hSetEncoding stderr utf8
-
-        putStrLn $ "Ghcide setup tester in " ++ dir ++ "."
-        putStrLn "Report bugs at https://github.com/digital-asset/ghcide/issues"
-
-        putStrLn $ "\nStep 1/6: Finding files to test in " ++ dir
-        files <- expandFiles (argFiles ++ ["." | null argFiles])
-        -- LSP works with absolute file paths, so try and behave similarly
-        files <- nubOrd <$> mapM IO.canonicalizePath files
-        putStrLn $ "Found " ++ show (length files) ++ " files"
-
-        putStrLn "\nStep 2/6: Looking for hie.yaml files that control setup"
-        cradles <- mapM findCradle files
-        let ucradles = nubOrd cradles
-        let n = length ucradles
-        putStrLn $ "Found " ++ show n ++ " cradle" ++ ['s' | n /= 1]
-        putStrLn "\nStep 3/6: Initializing the IDE"
-        vfs <- makeVFSHandle
-        debouncer <- newAsyncDebouncer
-        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Debug) debouncer (defaultIdeOptions $ loadSession dir) vfs
-
-        putStrLn "\nStep 4/6: Type checking the files"
-        setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
-        _ <- runActionSync "TypecheckTest" ide $ uses TypeCheck (map toNormalizedFilePath' files)
---        results <- runActionSync ide $ use TypeCheck $ toNormalizedFilePath' "src/Development/IDE/Core/Rules.hs"
-        {-
-        let fp =  toNormalizedFilePath' "ghc/Main.hs"
-        results <- runActionSync "tc" ide $ use TypeCheck $ toNormalizedFilePath' "ghc/Main.hs"
-        hover1 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
-        print hover1
-        traceMarkerIO "START"
-        hover2 <- duration $ runIdeAction "Hover" ide $ getAtPoint fp (Position 950 20)
-        print hover2
-        traceMarkerIO "END"
-        -}
-        cancel worker
-        return ()
 
 expandFiles :: [FilePath] -> IO [FilePath]
 expandFiles = concatMapM $ \x -> do
