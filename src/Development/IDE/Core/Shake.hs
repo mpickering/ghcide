@@ -392,7 +392,7 @@ logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
 logDelayedAction l d  = do
     start <- liftIO $ offsetTime
     -- These traces go to the eventlog and can be interpreted with the opentelemetry library.
-    actionBracket (beginSpan (show $ actionKey d)) (const $ endSpan) (const $ getAction d)
+    actionBracket (beginSpan (show $ actionKey d)) endSpan (const $ getAction d)
     runTime <- liftIO $ start
     return ()
     liftIO $ logPriority l (actionPriority d) $ T.pack $

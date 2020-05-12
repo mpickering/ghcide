@@ -65,7 +65,7 @@ library
         utf8-string,
         hslogger,
         psqueues,
-        opentelemetry
+        opentelemetry >=0.4 && <0.5
     if flag(ghc-lib)
       build-depends:
         ghc-lib >= 8.8,
