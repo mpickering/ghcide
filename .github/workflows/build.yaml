@@ -50,4 +50,4 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.stack-yaml }}-stack-work
       - name: Build
         run: |
-          stack build --no-interleaved-output --fast --stack-yaml ${{ matrix.stack-yaml }}
+          stack build --test --no-run-tests --no-interleaved-output --fast --stack-yaml ${{ matrix.stack-yaml }}
