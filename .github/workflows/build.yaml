@@ -4,11 +4,29 @@ jobs:
   linux-cabal:
     name: Cabal Build
     runs-on: ubuntu-latest # or macOS-latest, or windows-latest
+    strategy:
+      matrix:
+        ghc: ['8.6', '8.8', '8.10'] # Resolves to a latest point release available in GH Actions
     steps:
       - uses: actions/checkout@v2
+      - uses: actions/cache@v1
+        name: Cache ~/.cabal/packages
+        with:
+          path: ~/.cabal/packages
+          key: ${{ runner.os }}-${{ matrix.ghc }}-cabal-packages
+      - uses: actions/cache@v1
+        name: Cache ~/.cabal/store
+        with:
+          path: ~/.cabal/store
+          key: ${{ runner.os }}-${{ matrix.ghc }}-cabal-store
+      - uses: actions/cache@v1
+        name: Cache dist-newstyle
+        with:
+          path: dist-newstyle
+          key: ${{ runner.os }}-${{ matrix.ghc }}-dist-newstyle
       - uses: actions/setup-haskell@v1.1
         with:
-          ghc-version: '8.8' # Resolves to the latest point release of GHC 8.8
+          ghc-version: ${{ matrix.ghc }}
           cabal-version: '3.2.0.0' # Exact version of Cabal
       - run: cabal v2-build
 
