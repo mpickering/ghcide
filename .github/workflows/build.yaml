@@ -1,8 +1,8 @@
 on: [push]
 name: build
 jobs:
-  runhaskell:
-    name: Simple Build
+  linux-cabal:
+    name: Cabal Build
     runs-on: ubuntu-latest # or macOS-latest, or windows-latest
     steps:
       - uses: actions/checkout@v2
@@ -11,3 +11,25 @@ jobs:
           ghc-version: '8.8' # Resolves to the latest point release of GHC 8.8
           cabal-version: '3.2.0.0' # Exact version of Cabal
       - run: cabal v2-build
+
+  linux-stack:
+    name: Stack Build
+    runs-on: ubuntu-latest # or macOS-latest, or windows-latest
+    strategy:
+      matrix:
+        stack-yaml: ['stack.yaml', 'stack88.yaml', 'stack810.yaml']
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/cache@v1
+        name: Cache ~/.stack
+        with:
+          path: ~/.stack
+          key: ${{ runner.os }}-${{ matrix.stack-yaml }}-stack-home
+      - uses: actions/cache@v1
+        name: Cache .stack-work
+        with:
+          path: .stack-work
+          key: ${{ runner.os }}-${{ matrix.stack-yaml }}-stack-work
+      - name: Build
+        run: |
+          stack build --no-interleaved-output --fast --stack-yaml ${{ matrix.stack-yaml }}
