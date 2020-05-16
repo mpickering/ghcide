@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest # or macOS-latest, or windows-latest
     strategy:
       matrix:
-        stack-yaml: ['stack.yaml', 'stack88.yaml', 'stack810.yaml']
+        stack-yaml: ['stack86.yaml', 'stack.yaml', 'stack810.yaml']
     steps:
       - uses: actions/checkout@v2
       - uses: actions/cache@v1
