@@ -352,7 +352,7 @@ loadSession dir = do
         modifyVar_ fileToFlags $ \var -> do
             pure $ Map.insert hieYaml (HM.fromList (cs ++ cached_targets)) var
 
-        return res
+        return (cs, res)
 
     lock <- newLock
 
@@ -376,9 +376,10 @@ loadSession dir = do
         case HM.lookup (toNormalizedFilePath' cfp) v of
             Just opts -> do
                 --putStrLn $ "Cached component of " <> show file
-                pure (fst opts)
+                pure ([], fst opts)
             Nothing-> do
-                finished_barrier <- newBarrier
+                finished_barrier <- newBarrier ::
+                                      IO (Barrier ([(NormalizedFilePath, (IdeResult HscEnvEq, DependencyInfo))], IdeResult HscEnvEq))
                 -- fork a new thread here which won't be killed by shake
                 -- throwing an async exception
                 void $ forkIO $ do
@@ -407,7 +408,8 @@ loadSession dir = do
             hieYaml <- cradleLoc file
             sessionOpts (hieYaml, file)
     -- The lock is on the `runningCradle` resource
-    return $ \file -> liftIO $ withLock lock $ do
+    return $ \file -> do
+      (_cs, opts) <- liftIO $ withLock lock $ do
         as <- readIORef runningCradle
         finished <- poll as
         case finished of
@@ -419,6 +421,7 @@ loadSession dir = do
             Nothing -> do
                 _ <- wait as
                 getOptions file
+      return opts
 
 {- Note [Avoiding bad interface files]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -486,14 +489,15 @@ renderCradleError nfp (CradleError _ec t) =
   ideErrorText nfp (T.unlines (map T.pack t))
 
 
-checkDependencyInfo :: Map.Map FilePath (Maybe UTCTime) -> IO Bool
+checkDependencyInfo :: DependencyInfo -> IO Bool
 checkDependencyInfo old_di = do
   di <- getDependencyInfo (Map.keys old_di)
   return (di == old_di)
 
 
+type DependencyInfo = Map.Map FilePath (Maybe UTCTime)
 
-getDependencyInfo :: [FilePath] -> IO (Map.Map FilePath (Maybe UTCTime))
+getDependencyInfo :: [FilePath] -> IO DependencyInfo
 getDependencyInfo fs = Map.fromList <$> mapM do_one fs
 
   where
@@ -541,8 +545,8 @@ memoIO op = do
 
 setOptions :: GhcMonad m => ComponentOptions -> DynFlags -> m (DynFlags, [Target])
 setOptions (ComponentOptions theOpts _) dflags = do
-    (dflags_, targets) <- addCmdOpts theOpts dflags
-    let dflags' =
+    (dflags', targets) <- addCmdOpts theOpts dflags
+    let dflags'' =
           -- disabled, generated directly by ghcide instead
           flip gopt_unset Opt_WriteInterface $
           -- disabled, generated directly by ghcide instead
@@ -550,10 +554,10 @@ setOptions (ComponentOptions theOpts _) dflags = do
           dontWriteHieFiles $
           setIgnoreInterfacePragmas $
           setLinkerOptions $
-          disableOptimisation dflags
+          disableOptimisation dflags'
     -- initPackages parses the -package flags and
     -- sets up the visibility for each component.
-    (final_df, _) <- liftIO $ initPackages dflags'
+    (final_df, _) <- liftIO $ initPackages dflags''
 --    let df'' = gopt_unset df' Opt_WarnIsError
     return (final_df, targets)
 
