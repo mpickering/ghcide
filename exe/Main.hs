@@ -501,22 +501,44 @@ type HieMap = Map.Map (Maybe FilePath) (HscEnv, [RawComponentInfo])
 type FlagsMap = Map.Map (Maybe FilePath) (HM.HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
 
 -- This is pristine information about a component
-data RawComponentInfo = RawComponentInfo { rawComponentUnitId :: InstalledUnitId
-                                   , rawComponentDynFlags :: DynFlags
-                                   , rawComponentTargets :: [Target]
-                                   , rawComponentFP :: NormalizedFilePath
-                                   , rawComponentCOptions :: ComponentOptions
-                                   , rawComponentDependencyInfo :: DependencyInfo }
+data RawComponentInfo = RawComponentInfo
+  { rawComponentUnitId :: InstalledUnitId
+  -- | Unprocessed DynFlags. Contains inplace packages such as libraries.
+  -- We do not want to use them unprocessed.
+  , rawComponentDynFlags :: DynFlags
+  -- | All targets of this components.
+  , rawComponentTargets :: [Target]
+  -- | Filepath which caused the creation of this component
+  , rawComponentFP :: NormalizedFilePath
+  -- | Component Options used to load the component.
+  , rawComponentCOptions :: ComponentOptions
+  -- | Maps cradle dependencies, such as `stack.yaml`, or `.cabal` file
+  -- to last modification time. See Note [Multi Cradle Dependency Info].
+  , rawComponentDependencyInfo :: DependencyInfo
+  }
 
 -- This is processed information about the component, in particular the dynflags will be modified.
-data ComponentInfo = ComponentInfo { componentUnitId :: InstalledUnitId
-                                   , componentDynFlags :: DynFlags
-                                   , componentInternalUnits :: [InstalledUnitId]
-                                   , componentTargets :: [Target]
-                                   , componentFP :: NormalizedFilePath
-                                   , componentCOptions :: ComponentOptions
-                                   , componentDependencyInfo :: DependencyInfo }
+data ComponentInfo = ComponentInfo
+  { componentUnitId :: InstalledUnitId
+  -- | Processed DynFlags. Does not contain inplace packages such as local
+  -- libraries. Can be used to actually load this Component.
+  , componentDynFlags :: DynFlags
+  -- | Internal units, such as local libraries, that this component
+  -- is loaded with. These have been extracted from the original
+  -- ComponentOptions.
+  , componentInternalUnits :: [InstalledUnitId]
+  -- | All targets of this components.
+  , componentTargets :: [Target]
+  -- | Filepath which caused the creation of this component
+  , componentFP :: NormalizedFilePath
+  -- | Component Options used to load the component.
+  , componentCOptions :: ComponentOptions
+  -- | Maps cradle dependencies, such as `stack.yaml`, or `.cabal` file
+  -- to last modification time. See Note [Multi Cradle Dependency Info]
+  , componentDependencyInfo :: DependencyInfo
+  }
 
+-- | Check if any dependency has been modified lately.
 checkDependencyInfo :: DependencyInfo -> IO Bool
 checkDependencyInfo old_di = do
   di <- getDependencyInfo (Map.keys old_di)
@@ -542,7 +564,7 @@ getDependencyInfo fs = Map.fromList <$> mapM do_one fs
     do_one :: FilePath -> IO (FilePath, Maybe UTCTime)
     do_one fp = (fp,) . either (const Nothing) Just <$> tryIO (getModificationTime fp)
 
--- This function removes all the -package flags which refer to packages we
+-- | This function removes all the -package flags which refer to packages we
 -- are going to deal with ourselves. For example, if a executable depends
 -- on a library component, then this function will remove the library flag
 -- from the package flags for the executable
