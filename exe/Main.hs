@@ -424,6 +424,8 @@ newComponentCache logger hsc_env uids ci = do
     -- A special target for the file which caused this wonderful
     -- component to be created. In case the cradle doesn't list all the targets for
     -- the component, in which case things will be horribly broken anyway.
+    -- Otherwise, we will immediately attempt to reload this module which
+    -- causes an infinite loop and high CPU usage.
     let special_target = (componentFP ci, res)
     let xs = map (,res) ctargets
     return (special_target:xs, res)
