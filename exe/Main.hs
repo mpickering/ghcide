@@ -482,7 +482,9 @@ E.g. when you load two executables, they can not depend on each other. They
 should be filtered out, such that we dont have to re-compile everything.
 -}
 
-
+-- | Set the cache-directory based on the ComponentOptions and a list of
+-- internal packages.
+-- For the exact reason, see Note [Avoiding bad interface files].
 setCacheDir :: MonadIO m => String -> [String] -> ComponentOptions -> DynFlags -> m DynFlags
 setCacheDir prefix hscComponents comps dflags = do
     cacheDir <- liftIO $ getCacheDir prefix (hscComponents ++ componentOptions comps)
