@@ -192,7 +192,7 @@ hscEnv' GhcVersionMismatch{..} = Left $
 
 deps :: HscEnvEq -> [(InstalledUnitId, DynFlags)]
 deps (HscEnvEq _ _ u) = u
-deps (GhcVersionMismatch{}) = []
+deps GhcVersionMismatch{} = []
 
 -- | Wrap an 'HscEnv' into an 'HscEnvEq'.
 newHscEnvEq :: HscEnv -> [(InstalledUnitId, DynFlags)] -> IO HscEnvEq

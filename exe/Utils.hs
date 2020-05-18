@@ -1,4 +1,4 @@
-module Utils where
+module Utils (getLibdir) where
 
 import qualified GHC.Paths
 import System.Environment
