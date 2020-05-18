@@ -339,6 +339,7 @@ loadSession dir = do
            logInfo logger $ T.pack ("Consulting the cradle for " <> show cfp)
            cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
            eopts <- cradleToSessionOpts cradle cfp
+           logDebug logger $ T.pack ("Session loading result: " <> show eopts)
            case eopts of
              -- The cradle gave us some options so get to work turning them
              -- into and HscEnv.
