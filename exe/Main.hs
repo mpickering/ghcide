@@ -223,7 +223,7 @@ setNameCache :: IORef NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
 -- This is the key function which implements multi-component support. All
--- components mapping to the same hie,yaml file are mapped to the same
+-- components mapping to the same hie.yaml file are mapped to the same
 -- HscEnv which is updated as new components are discovered.
 loadSession :: FilePath -> Action (FilePath -> Action (IdeResult HscEnvEq))
 loadSession dir = do
