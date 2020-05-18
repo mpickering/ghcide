@@ -324,7 +324,7 @@ loadSession dir = do
 
           -- New HscEnv for the component in question, returns the new HscEnvEq and
           -- a mapping from FilePath to the newly created HscEnvEq.
-          let new_cache = newCache logger hscEnv uids
+          let new_cache = newComponentCache logger hscEnv uids
           (cs, res) <- new_cache new
           -- Modified cache targets for everything else in the hie.yaml file
           -- which now uses the same EPS and so on
@@ -401,12 +401,13 @@ loadSession dir = do
 
 
 -- | Create a mapping from FilePaths to HscEnvEqs
-newCache :: Logger
+newComponentCache
+         :: Logger
          -> HscEnv
          -> [(InstalledUnitId, DynFlags)]
          -> ComponentInfo
          -> IO ([(NormalizedFilePath, (IdeResult HscEnvEq, DependencyInfo))], (IdeResult HscEnvEq, DependencyInfo))
-newCache logger hsc_env uids ci =  do
+newComponentCache logger hsc_env uids ci = do
     let df = componentDynFlags ci
     let hscEnv' = hsc_env { hsc_dflags = df
                           , hsc_IC = (hsc_IC hsc_env) { ic_dflags = df } }
