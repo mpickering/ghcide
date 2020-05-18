@@ -542,7 +542,7 @@ memoIO op = do
 setOptions :: GhcMonad m => ComponentOptions -> DynFlags -> m (DynFlags, [Target])
 setOptions (ComponentOptions theOpts _) dflags = do
     (dflags_, targets) <- addCmdOpts theOpts dflags
-    let dflags'' =
+    let dflags' =
           -- disabled, generated directly by ghcide instead
           flip gopt_unset Opt_WriteInterface $
           -- disabled, generated directly by ghcide instead
@@ -550,10 +550,10 @@ setOptions (ComponentOptions theOpts _) dflags = do
           dontWriteHieFiles $
           setIgnoreInterfacePragmas $
           setLinkerOptions $
-          disableOptimisation dflags'
+          disableOptimisation dflags
     -- initPackages parses the -package flags and
     -- sets up the visibility for each component.
-    (final_df, _) <- liftIO $ initPackages dflags''
+    (final_df, _) <- liftIO $ initPackages dflags'
 --    let df'' = gopt_unset df' Opt_WarnIsError
     return (final_df, targets)
 
