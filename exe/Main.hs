@@ -7,23 +7,26 @@
 
 module Main(main) where
 
-import Data.Time.Clock (UTCTime)
 import Linker (initDynLinker)
 import Data.IORef
 import NameCache
 import Packages
 import Module
 import Arguments
-import Data.Maybe
-import Data.List.Extra
-import Data.Function
-import System.FilePath
+import Control.Concurrent.Async
 import Control.Concurrent.Extra
 import Control.Exception
 import Control.Monad.Extra
 import Control.Monad.IO.Class
 import Data.Default
-import System.Time.Extra
+import Data.Either
+import Data.Function
+import Data.List.Extra
+import Data.Maybe
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Data.Time.Clock (UTCTime)
+import Data.Version
 import Development.IDE.Core.Debouncer
 import Development.IDE.Core.FileStore
 import Development.IDE.Core.OfInterest
@@ -40,42 +43,36 @@ import Development.IDE.GHC.Util
 import Development.IDE.Plugin
 import Development.IDE.Plugin.Completions as Completions
 import Development.IDE.Plugin.CodeAction as CodeAction
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
 import qualified Language.Haskell.LSP.Core as LSP
 import Language.Haskell.LSP.Messages
 import Language.Haskell.LSP.Types (LspId(IdInt))
-import Data.Version
 import Development.IDE.LSP.LanguageServer
 import qualified System.Directory.Extra as IO
 import System.Environment
 import System.IO
 import System.Exit
+import System.FilePath
+import System.Directory
+import System.Time.Extra
 import HIE.Bios.Environment (addCmdOpts)
 import Paths_ghcide
 import Development.GitRev
-import Development.Shake (Action,  action)
+import Development.Shake (Action, action)
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as Map
-import Data.Either
-import qualified Crypto.Hash.SHA1               as H
-import qualified Data.ByteString.Char8          as B
-import Data.ByteString.Base16         (encode)
-import Control.Concurrent.Async
-
-import           DynFlags                       (gopt_set, gopt_unset,
-                                                 updOptLevel)
-
+import qualified Crypto.Hash.SHA1 as H
+import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Base16 (encode)
+import DynFlags (gopt_set, gopt_unset, updOptLevel)
 import GhcMonad
 import HscTypes (HscEnv(..), ic_dflags)
 import DynFlags (PackageFlag(..), PackageArg(..))
 import GHC hiding (def)
-import           GHC.Check                      ( VersionCheck(..), makeGhcVersionChecker )
+import GHC.Check ( VersionCheck(..), makeGhcVersionChecker )
 
-import           HIE.Bios.Cradle
-import           HIE.Bios.Types
-import System.Directory
+import HIE.Bios.Cradle
+import HIE.Bios.Types
 
 import Utils
 
