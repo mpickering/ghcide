@@ -492,8 +492,7 @@ renderCradleError :: NormalizedFilePath -> CradleError -> FileDiagnostic
 renderCradleError nfp (CradleError _ec t) =
   ideErrorText nfp (T.unlines (map T.pack t))
 
-
-
+-- See Note [Multi Cradle Dependency Info]
 type DependencyInfo = Map.Map FilePath (Maybe UTCTime)
 type HieMap = Map.Map (Maybe FilePath) (HscEnv, [RawComponentInfo])
 type FlagsMap = Map.Map (Maybe FilePath) (HM.HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
@@ -520,10 +519,16 @@ checkDependencyInfo old_di = do
   di <- getDependencyInfo (Map.keys old_di)
   return (di == old_di)
 
+-- Note [Multi Cradle Dependency Info]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 -- Why do we implement our own file modification tracking here?
 -- The primary reason is that the custom caching logic is quite complicated and going into shake
 -- adds even more complexity and more indirection. I did try for about 5 hours to work out how to
 -- use shake rules rather than IO but eventually gave up.
+
+-- | Computes a mapping from a filepath to its latest modification date.
+-- See Note [Multi Cradle Dependency Info] why we do this ourselves instead
+-- of letting shake take care of it.
 getDependencyInfo :: [FilePath] -> IO DependencyInfo
 getDependencyInfo fs = Map.fromList <$> mapM do_one fs
 
@@ -615,7 +620,7 @@ getCacheDir prefix opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> prefix ++
         -- GHC options will create incompatible interface files.
         opts_hash = B.unpack $ encode $ H.finalize $ H.updates H.init $ (map B.pack opts)
 
--- Prefix for the cache path
+-- | Sub directory for the cache path
 cacheDir :: String
 cacheDir = "ghcide"
 
