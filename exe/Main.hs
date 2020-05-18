@@ -188,6 +188,7 @@ showEvent lock (EventFileDiagnostics (toNormalizedFilePath' -> file) diags) =
 showEvent lock e = withLock lock $ print e
 
 
+-- | Run the specific cradle on a specific FilePath via hie-bios.
 cradleToSessionOpts :: Cradle a -> FilePath -> IO (Either [CradleError] ComponentOptions)
 cradleToSessionOpts cradle file = do
     let showLine s = putStrLn ("> " ++ s)
@@ -207,7 +208,7 @@ emptyHscEnv = do
     initDynLinker env
     pure env
 
--- Convert a target to a list of potential absolute paths.
+-- | Convert a target to a list of potential absolute paths.
 -- A TargetModule can be anywhere listed by the supplied include
 -- directories
 -- A target file is a relative path but with a specific prefix so just need
@@ -233,7 +234,7 @@ loadSession dir = do
   liftIO $ do
     -- Mapping from hie.yaml file to HscEnv, one per hie.yaml file
     hscEnvs <- newVar Map.empty :: IO (Var HieMap)
-    -- Mapping from a filepath to HscEnv
+    -- Mapping from a Filepath to HscEnv
     fileToFlags <- newVar Map.empty :: IO (Var FlagsMap)
 
     -- This caches the mapping from Mod.hs -> hie.yaml
@@ -248,173 +249,186 @@ loadSession dir = do
     -- Create a new HscEnv from a hieYaml root and a set of options
     -- If the hieYaml file already has an HscEnv, the new component is
     -- combined with the components in the old HscEnv into a new HscEnv
-    -- which contains both.
-    packageSetup <- return $ \(hieYaml, cfp, opts) -> do
-        -- Parse DynFlags for the newly discovered component
-        hscEnv <- emptyHscEnv
-        (df, targets) <- evalGhcEnv hscEnv $
-                          setOptions opts (hsc_dflags hscEnv)
-        dep_info <- getDependencyInfo (componentDependencies opts)
-        -- Now lookup to see whether we are combining with an exisiting HscEnv
-        -- or making a new one. The lookup returns the HscEnv and a list of
-        -- information about other components loaded into the HscEnv
-        -- (unitId, DynFlag, Targets)
-        modifyVar hscEnvs $ \m -> do
-            -- Just deps if there's already an HscEnv
-            -- Nothing is it's the first time we are making an HscEnv
-            let oldDeps = Map.lookup hieYaml m
-            let -- Add the raw information about this component to the list
-                -- We will modify the unitId and DynFlags used for
-                -- compilation but these are the true source of
-                -- information.
-                new_deps = (RawComponentInfo (thisInstalledUnitId df) df targets cfp opts dep_info)
-                              : maybe [] snd oldDeps
-                -- Get all the unit-ids for things in this component
-                inplace = map rawComponentUnitId new_deps
+    -- which contains the union.
+    let packageSetup :: (Maybe FilePath, NormalizedFilePath, ComponentOptions)
+                     -> IO (HscEnv, ComponentInfo, [ComponentInfo])
+        packageSetup (hieYaml, cfp, opts) = do
+          -- Parse DynFlags for the newly discovered component
+          hscEnv <- emptyHscEnv
+          (df, targets) <- evalGhcEnv hscEnv $
+                            setOptions opts (hsc_dflags hscEnv)
+          dep_info <- getDependencyInfo (componentDependencies opts)
+          -- Now lookup to see whether we are combining with an existing HscEnv
+          -- or making a new one. The lookup returns the HscEnv and a list of
+          -- information about other components loaded into the HscEnv
+          -- (unitId, DynFlag, Targets)
+          modifyVar hscEnvs $ \m -> do
+              -- Just deps if there's already an HscEnv
+              -- Nothing is it's the first time we are making an HscEnv
+              let oldDeps = Map.lookup hieYaml m
+              let -- Add the raw information about this component to the list
+                  -- We will modify the unitId and DynFlags used for
+                  -- compilation but these are the true source of
+                  -- information.
+                  new_deps = (RawComponentInfo (thisInstalledUnitId df) df targets cfp opts dep_info)
+                                : maybe [] snd oldDeps
+                  -- Get all the unit-ids for things in this component
+                  inplace = map rawComponentUnitId new_deps
 
-            -- Note [Avoiding bad interface files]
-            new_deps' <- forM new_deps $ \RawComponentInfo{..} -> do
-                -- Remove all inplace dependencies from package flags for
-                -- components in this HscEnv
-                let (df2, uids) = removeInplacePackages inplace rawComponentDynFlags
-                let prefix = show rawComponentUnitId
-                processed_df <- setCacheDir prefix (sort $ map show uids) opts df2
-                -- All deps, but without any packages which are also loaded
-                -- into memory
-                pure $ ComponentInfo rawComponentUnitId
-                                     processed_df
-                                     uids
-                                     rawComponentTargets
-                                     rawComponentFP
-                                     rawComponentCOptions
-                                     rawComponentDependencyInfo
-            -- Make a new HscEnv, we have to recompile everything from
-            -- scratch again (for now)
-            -- It's important to keep the same NameCache though for reasons
-            -- that I do not fully understand
-            logInfo logger (T.pack ("Making new HscEnv" ++ (show inplace)))
-            hscEnv <- case oldDeps of
-                        Nothing -> emptyHscEnv
-                        Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv
-            newHscEnv <-
-              -- Add the options for the current component to the HscEnv
-              evalGhcEnv hscEnv $ do
-                _ <- setSessionDynFlags df
-                getSession
-            -- Modify the map so the hieYaml now maps to the newly created
-            -- HscEnv
-            -- Returns
-            -- . the new HscEnv so it can be used to modify the
-            --   FilePath -> HscEnv map (fileToFlags)
-            -- . The information for the new component which caused this cache miss
-            -- . The modified information (without -inplace flags) for
-            --   existing packages
-            pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps', tail new_deps'))
+              new_deps' <- forM new_deps $ \RawComponentInfo{..} -> do
+                  -- Remove all inplace dependencies from package flags for
+                  -- components in this HscEnv
+                  let (df2, uids) = removeInplacePackages inplace rawComponentDynFlags
+                  let prefix = show rawComponentUnitId
+                  -- See Note [Avoiding bad interface files]
+                  processed_df <- setCacheDir prefix (sort $ map show uids) opts df2
+                  -- The final component information, mostly the same but the DynFlags don't
+                  -- contain any packages which are also loaded
+                  -- into the same component.
+                  pure $ ComponentInfo rawComponentUnitId
+                                       processed_df
+                                       uids
+                                       rawComponentTargets
+                                       rawComponentFP
+                                       rawComponentCOptions
+                                       rawComponentDependencyInfo
+              -- Make a new HscEnv, we have to recompile everything from
+              -- scratch again (for now)
+              -- It's important to keep the same NameCache though for reasons
+              -- that I do not fully understand
+              logInfo logger (T.pack ("Making new HscEnv" ++ (show inplace)))
+              hscEnv <- case oldDeps of
+                          Nothing -> emptyHscEnv
+                          Just (old_hsc, _) -> setNameCache (hsc_NC old_hsc) <$> emptyHscEnv
+              newHscEnv <-
+                -- Add the options for the current component to the HscEnv
+                evalGhcEnv hscEnv $ do
+                  _ <- setSessionDynFlags df
+                  getSession
+              -- Modify the map so the hieYaml now maps to the newly created
+              -- HscEnv
+              -- Returns
+              -- . the new HscEnv so it can be used to modify the
+              --   FilePath -> HscEnv map (fileToFlags)
+              -- . The information for the new component which caused this cache miss
+              -- . The modified information (without -inplace flags) for
+              --   existing packages
+              pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps', tail new_deps'))
 
+    let session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions) -> IO (IdeResult HscEnvEq)
+        session (hieYaml, cfp, opts) = do
+          (hscEnv, new, old_deps) <- packageSetup (hieYaml, cfp, opts)
+          -- Make a map from unit-id to DynFlags, this is used when trying to
+          -- resolve imports. (especially PackageImports)
+          let uids = map (\ci -> (componentUnitId ci, componentDynFlags ci)) (new : old_deps)
 
-    (session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions) -> IO (IdeResult HscEnvEq)) <- return $ \(hieYaml, cfp, opts) -> do
-        (hscEnv, new, old_deps) <- packageSetup (hieYaml, cfp, opts)
-        -- Make a map from unit-id to DynFlags, this is used when trying to
-        -- resolve imports.
-        let uids = map (\ci -> (componentUnitId ci, componentDynFlags ci)) (new : old_deps)
+          -- For each component, now make a new HscEnvEq which contains the
+          -- HscEnv for the hie.yaml file but the DynFlags for that component
 
-        -- For each component, now make a new HscEnvEq which contains the
-        -- HscEnv for the hie.yaml file but the DynFlags for that component
-        --
-        -- Then look at the targets for each component and create a map
-        -- from FilePath to the HscEnv
-        let new_cache ci =  do
-              let df = componentDynFlags ci
-              let hscEnv' = hscEnv { hsc_dflags = df
-                                   , hsc_IC = (hsc_IC hscEnv) { ic_dflags = df } }
+          -- New HscEnv for the component in question, returns the new HscEnvEq and
+          -- a mapping from FilePath to the newly created HscEnvEq.
+          let new_cache = newCache logger hscEnv uids
+          (cs, res) <- new_cache new
+          -- Modified cache targets for everything else in the hie.yaml file
+          -- which now uses the same EPS and so on
+          cached_targets <- concatMapM (fmap fst . new_cache) old_deps
+          modifyVar_ fileToFlags $ \var -> do
+              pure $ Map.insert hieYaml (HM.fromList (cs ++ cached_targets)) var
 
-              versionMismatch <- checkGhcVersion
-              henv <- case versionMismatch of
-                        Just mismatch -> return mismatch
-                        Nothing -> newHscEnvEq hscEnv' uids
-              let res = (([], Just henv), componentDependencyInfo ci)
-              liftIO $ logDebug logger (T.pack (show res))
+          return (fst res)
 
-              let is = importPaths df
-              ctargets <- concatMapM (targetToFile is  . targetId) (componentTargets ci)
-              -- A special target for the file which caused this wonderful
-              -- component to be created. In case the cradle doesn't list all the targets for
-              -- the component, in which case things will be horribly broken anyway.
-              let special_target = (componentFP ci, res)
-              let xs = map (,res) ctargets
-              return (special_target:xs, res)
-
-        -- New HscEnv for the component in question
-        (cs, res) <- new_cache new
-        -- Modified cache targets for everything else in the hie.yaml file
-        -- which now uses the same EPS and so on
-        cached_targets <- concatMapM (fmap fst . new_cache) old_deps
-        modifyVar_ fileToFlags $ \var -> do
-            pure $ Map.insert hieYaml (HM.fromList (cs ++ cached_targets)) var
-
-        return (fst res)
-
-    lock <- newLock
+    let consultCradle :: Maybe FilePath -> FilePath -> IO (IdeResult HscEnvEq)
+        consultCradle hieYaml cfp = do
+           logInfo logger $ T.pack ("Consulting the cradle for " <> show cfp)
+           cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
+           eopts <- cradleToSessionOpts cradle cfp
+           print eopts
+           case eopts of
+             -- The cradle gave us some options so get to work turning them
+             -- into and HscEnv.
+             Right opts -> do
+               res <- session (hieYaml, toNormalizedFilePath' cfp, opts)
+               return res
+             -- Failure case, either a cradle error or the none cradle
+             Left err -> do
+               dep_info <- getDependencyInfo ([fp | Just fp <- [hieYaml]])
+               let ncfp = toNormalizedFilePath' cfp
+               let res = (map (renderCradleError ncfp) err, Nothing)
+               modifyVar_ fileToFlags $ \var -> do
+                 pure $ Map.insertWith HM.union hieYaml (HM.singleton ncfp (res, dep_info)) var
+               return res
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
     let sessionOpts :: (Maybe FilePath, FilePath) -> IO (IdeResult HscEnvEq)
         sessionOpts (hieYaml, file) = do
-
-
-          fm <- readVar fileToFlags
-          let mv = Map.lookup hieYaml fm
-          let v = fromMaybe HM.empty mv
+          v <- fromMaybe HM.empty . Map.lookup hieYaml <$> readVar fileToFlags
           cfp <- liftIO $ canonicalizePath file
           case HM.lookup (toNormalizedFilePath' cfp) v of
-            Just (_, old_di) -> do
+            Just (opts, old_di) -> do
               deps_ok <- checkDependencyInfo old_di
-              unless deps_ok $ do
-                modifyVar_ fileToFlags (const (return Map.empty))
-                -- Keep the same name cache
-                modifyVar_ hscEnvs (return . Map.adjust (\(h, _) -> (h, [])) hieYaml )
-            Nothing -> return ()
-          case HM.lookup (toNormalizedFilePath' cfp) v of
-              Just opts -> do
-                  --putStrLn $ "Cached component of " <> show file
-                  pure (fst opts)
-              Nothing-> do
-                  putStrLn $ "Consulting the cradle for " <> show file
-                  cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
-                  eopts <- cradleToSessionOpts cradle cfp
-                  print eopts
-                  case eopts of
-                    Right opts -> do
-                      res <- session (hieYaml, toNormalizedFilePath' cfp, opts)
-                      return res
-                    Left err -> do
-                      dep_info <- getDependencyInfo ([fp | Just fp <- [hieYaml]])
-                      let ncfp = toNormalizedFilePath' cfp
-                      let res = (map (renderCradleError ncfp) err, Nothing)
-                      modifyVar_ fileToFlags $ \var -> do
-                        pure $ Map.insertWith HM.union hieYaml (HM.singleton ncfp (res, dep_info)) var
-                      return res
+              if not deps_ok
+                then do
+                  -- If the dependencies are out of date then clear both caches and start
+                  -- again.
+                  modifyVar_ fileToFlags (const (return Map.empty))
+                  -- Keep the same name cache
+                  modifyVar_ hscEnvs (return . Map.adjust (\(h, _) -> (h, [])) hieYaml )
+                  consultCradle hieYaml cfp
+                else return opts
+            Nothing -> consultCradle hieYaml cfp
 
     dummyAs <- async $ return (error "Uninitialised")
     runningCradle <- newIORef dummyAs :: IO (IORef (Async (IdeResult HscEnvEq)))
     -- The main function which gets options for a file. We only want one of these running
-    -- at a time.
+    -- at a time. Therefore the IORef contains the currently running cradle, if we try
+    -- to get some more options then we wait for the currently running action to finish
+    -- before attempting to do so.
     let getOptions :: FilePath -> IO (IdeResult HscEnvEq)
         getOptions file = do
             hieYaml <- cradleLoc file
             sessionOpts (hieYaml, file)
     -- The lock is on the `runningCradle` resource
+    lock <- newLock
     return $ \file -> do
       liftIO $ withLock lock $ do
         as <- readIORef runningCradle
+        -- Is a cradle running?
         finished <- poll as
-        case finished of
-            Just {} -> return ()
-             -- If it's not finished then wait and then get options, this could of course be killed still
-            Nothing -> void $ wait as
+        -- If the cradle is not finished, then wait for it to finish.
+        when (isNothing finished) (void $ wait as)
         join $ mask_ $ do
           as <- async $ getOptions file
           writeIORef runningCradle as
           return (wait as)
+
+
+
+-- | Create a mapping from FilePaths to HscEnvEqs
+newCache :: Logger
+         -> HscEnv
+         -> [(InstalledUnitId, DynFlags)]
+         -> ComponentInfo
+         -> IO ([(NormalizedFilePath, (IdeResult HscEnvEq, DependencyInfo))], (IdeResult HscEnvEq, DependencyInfo))
+newCache logger hsc_env uids ci =  do
+    let df = componentDynFlags ci
+    let hscEnv' = hsc_env { hsc_dflags = df
+                          , hsc_IC = (hsc_IC hsc_env) { ic_dflags = df } }
+
+    versionMismatch <- checkGhcVersion
+    henv <- case versionMismatch of
+              Just mismatch -> return mismatch
+              Nothing -> newHscEnvEq hscEnv' uids
+    let res = (([], Just henv), componentDependencyInfo ci)
+    liftIO $ logDebug logger (T.pack (show res))
+
+    let is = importPaths df
+    ctargets <- concatMapM (targetToFile is  . targetId) (componentTargets ci)
+    -- A special target for the file which caused this wonderful
+    -- component to be created. In case the cradle doesn't list all the targets for
+    -- the component, in which case things will be horribly broken anyway.
+    let special_target = (componentFP ci, res)
+    let xs = map (,res) ctargets
+    return (special_target:xs, res)
 
 {- Note [Avoiding bad interface files]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -487,7 +501,7 @@ type DependencyInfo = Map.Map FilePath (Maybe UTCTime)
 type HieMap = Map.Map (Maybe FilePath) (HscEnv, [RawComponentInfo])
 type FlagsMap = Map.Map (Maybe FilePath) (HM.HashMap NormalizedFilePath (IdeResult HscEnvEq, DependencyInfo))
 
--- This is unmodified
+-- This is pristine information about a component
 data RawComponentInfo = RawComponentInfo { rawComponentUnitId :: InstalledUnitId
                                    , rawComponentDynFlags :: DynFlags
                                    , rawComponentTargets :: [Target]
@@ -495,6 +509,7 @@ data RawComponentInfo = RawComponentInfo { rawComponentUnitId :: InstalledUnitId
                                    , rawComponentCOptions :: ComponentOptions
                                    , rawComponentDependencyInfo :: DependencyInfo }
 
+-- This is processed information about the component, in particular the dynflags will be modified.
 data ComponentInfo = ComponentInfo { componentUnitId :: InstalledUnitId
                                    , componentDynFlags :: DynFlags
                                    , componentInternalUnits :: [InstalledUnitId]
@@ -508,8 +523,10 @@ checkDependencyInfo old_di = do
   di <- getDependencyInfo (Map.keys old_di)
   return (di == old_di)
 
-
-
+-- Why do we implement our own file modification tracking here?
+-- The primary reason is that the custom caching logic is quite complicated and going into shake
+-- adds even more complexity and more indirection. I did try for about 5 hours to work out how to
+-- use shake rules rather than IO but eventually gave up.
 getDependencyInfo :: [FilePath] -> IO DependencyInfo
 getDependencyInfo fs = Map.fromList <$> mapM do_one fs
 
