@@ -104,7 +104,10 @@ locateModule dflags comp_info exts doesExist modName mbPkgName isSource = do
     Nothing -> do
       -- first try to find the module as a file. If we can't find it try to find it in the package
       -- database.
-      mbFile <- locateModuleFile (map snd import_paths) exts doesExist isSource $ unLoc modName
+      -- Here the importPaths for the current modules are added to the front of the import paths from the other components.
+      -- This is particularly important for Paths_* modules which get generated for every component but unless you use it in
+      -- each component will end up being found in the wrong place and cause a multi-cradle match failure.
+      mbFile <- locateModuleFile (importPaths dflags : map snd import_paths) exts doesExist isSource $ unLoc modName
       case mbFile of
         Nothing -> lookupInPackageDB dflags
         Just file -> toModLocation file
