@@ -417,7 +417,7 @@ newComponentCache logger hsc_env uids ci = do
               Just mismatch -> return mismatch
               Nothing -> newHscEnvEq hscEnv' uids
     let res = (([], Just henv), componentDependencyInfo ci)
-    liftIO $ logDebug logger (T.pack (show res))
+    liftIO $ logDebug logger ("New Component Cache HscEnvEq: " <> T.pack (show res))
 
     let is = importPaths df
     ctargets <- concatMapM (targetToFile is  . targetId) (componentTargets ci)
