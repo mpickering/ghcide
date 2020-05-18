@@ -278,11 +278,11 @@ loadSession dir = do
                 -- components in this HscEnv
                 let (df2, uids) = removeInplacePackages inplace rawComponentDynFlags
                 let prefix = show rawComponentUnitId
-                df <- setCacheDir prefix (sort $ map show uids) opts df2
+                processed_df <- setCacheDir prefix (sort $ map show uids) opts df2
                 -- All deps, but without any packages which are also loaded
                 -- into memory
                 pure $ ComponentInfo rawComponentUnitId
-                                     df
+                                     processed_df
                                      uids
                                      rawComponentTargets
                                      rawComponentFP
@@ -312,7 +312,7 @@ loadSession dir = do
             pure (Map.insert hieYaml (newHscEnv, new_deps) m, (newHscEnv, head new_deps', tail new_deps'))
 
 
-    session <- return $ \(hieYaml, cfp, opts) -> do
+    (session :: (Maybe FilePath, NormalizedFilePath, ComponentOptions) -> IO (IdeResult HscEnvEq)) <- return $ \(hieYaml, cfp, opts) -> do
         (hscEnv, new, old_deps) <- packageSetup (hieYaml, cfp, opts)
         -- Make a map from unit-id to DynFlags, this is used when trying to
         -- resolve imports.
@@ -340,7 +340,7 @@ loadSession dir = do
               -- A special target for the file which caused this wonderful
               -- component to be created. In case the cradle doesn't list all the targets for
               -- the component, in which case things will be horribly broken anyway.
-              let special_target = (cfp, res)
+              let special_target = (componentFP ci, res)
               let xs = map (,res) ctargets
               return (special_target:xs, res)
 
@@ -352,70 +352,69 @@ loadSession dir = do
         modifyVar_ fileToFlags $ \var -> do
             pure $ Map.insert hieYaml (HM.fromList (cs ++ cached_targets)) var
 
-        return (cs, res)
+        return (fst res)
 
     lock <- newLock
 
     -- This caches the mapping from hie.yaml + Mod.hs -> [String]
-    sessionOpts <- return $ \(hieYaml, file) -> do
+    let sessionOpts :: (Maybe FilePath, FilePath) -> IO (IdeResult HscEnvEq)
+        sessionOpts (hieYaml, file) = do
 
 
-        fm <- readVar fileToFlags
-        let mv = Map.lookup hieYaml fm
-        let v = fromMaybe HM.empty mv
-        cfp <- liftIO $ canonicalizePath file
-        case HM.lookup (toNormalizedFilePath' cfp) v of
-          Just (_, old_di) -> do
-            deps_ok <- checkDependencyInfo old_di
-            unless deps_ok $ do
-              modifyVar_ fileToFlags (const (return Map.empty))
-              -- Keep the same name cache
-              modifyVar_ hscEnvs (return . Map.adjust (\(h, _) -> (h, [])) hieYaml )
-          Nothing -> return ()
-        case HM.lookup (toNormalizedFilePath' cfp) v of
-            Just opts -> do
-                --putStrLn $ "Cached component of " <> show file
-                pure ([], fst opts)
-            Nothing-> do
-                putStrLn $ "Consulting the cradle for " <> show file
-                cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
-                eopts <- cradleToSessionOpts cradle cfp
-                print eopts
-                case eopts of
-                  Right opts -> do
-                    (cs, res) <- session (hieYaml, toNormalizedFilePath' cfp, opts)
-                    return (cs, fst res)
-                  Left err -> do
-                    dep_info <- getDependencyInfo ([fp | Just fp <- [hieYaml]])
-                    let ncfp = toNormalizedFilePath' cfp
-                    let res = (map (renderCradleError ncfp) err, Nothing)
-                    modifyVar_ fileToFlags $ \var -> do
-                      pure $ Map.insertWith HM.union hieYaml (HM.singleton ncfp (res, dep_info)) var
-                    return ([(ncfp, (res, dep_info) )], res)
+          fm <- readVar fileToFlags
+          let mv = Map.lookup hieYaml fm
+          let v = fromMaybe HM.empty mv
+          cfp <- liftIO $ canonicalizePath file
+          case HM.lookup (toNormalizedFilePath' cfp) v of
+            Just (_, old_di) -> do
+              deps_ok <- checkDependencyInfo old_di
+              unless deps_ok $ do
+                modifyVar_ fileToFlags (const (return Map.empty))
+                -- Keep the same name cache
+                modifyVar_ hscEnvs (return . Map.adjust (\(h, _) -> (h, [])) hieYaml )
+            Nothing -> return ()
+          case HM.lookup (toNormalizedFilePath' cfp) v of
+              Just opts -> do
+                  --putStrLn $ "Cached component of " <> show file
+                  pure (fst opts)
+              Nothing-> do
+                  putStrLn $ "Consulting the cradle for " <> show file
+                  cradle <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle hieYaml
+                  eopts <- cradleToSessionOpts cradle cfp
+                  print eopts
+                  case eopts of
+                    Right opts -> do
+                      res <- session (hieYaml, toNormalizedFilePath' cfp, opts)
+                      return res
+                    Left err -> do
+                      dep_info <- getDependencyInfo ([fp | Just fp <- [hieYaml]])
+                      let ncfp = toNormalizedFilePath' cfp
+                      let res = (map (renderCradleError ncfp) err, Nothing)
+                      modifyVar_ fileToFlags $ \var -> do
+                        pure $ Map.insertWith HM.union hieYaml (HM.singleton ncfp (res, dep_info)) var
+                      return res
 
     dummyAs <- async $ return (error "Uninitialised")
-    runningCradle <- newIORef dummyAs
+    runningCradle <- newIORef dummyAs :: IO (IORef (Async (IdeResult HscEnvEq)))
     -- The main function which gets options for a file. We only want one of these running
     -- at a time.
-    let getOptions file = do
+    let getOptions :: FilePath -> IO (IdeResult HscEnvEq)
+        getOptions file = do
             hieYaml <- cradleLoc file
             sessionOpts (hieYaml, file)
     -- The lock is on the `runningCradle` resource
     return $ \file -> do
-      (_cs, opts) <- liftIO $ withLock lock $ do
+      liftIO $ withLock lock $ do
         as <- readIORef runningCradle
         finished <- poll as
         case finished of
-            Just {} -> do
-                mask_ $ do
-                  as <- async $ getOptions file
-                  writeIORef runningCradle as
-                wait as
+            Just {} -> return ()
              -- If it's not finished then wait and then get options, this could of course be killed still
-            Nothing -> do
-                _ <- wait as
-                getOptions file
-      return opts
+            Nothing -> void $ wait as
+        join $ mask_ $ do
+          as <- async $ getOptions file
+          writeIORef runningCradle as
+          return (wait as)
 
 {- Note [Avoiding bad interface files]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -570,7 +569,6 @@ setOptions (ComponentOptions theOpts _) dflags = do
     -- initPackages parses the -package flags and
     -- sets up the visibility for each component.
     (final_df, _) <- liftIO $ initPackages dflags''
---    let df'' = gopt_unset df' Opt_WarnIsError
     return (final_df, targets)
 
 

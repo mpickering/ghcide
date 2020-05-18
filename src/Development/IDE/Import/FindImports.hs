@@ -24,7 +24,6 @@ import           Packages
 import           Outputable                  (showSDoc, ppr, pprPanic)
 import           Finder
 import Control.DeepSeq
-import DriverPhases
 
 -- standard imports
 import           Control.Monad.Extra

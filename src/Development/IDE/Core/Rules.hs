@@ -501,6 +501,8 @@ loadGhcSession = do
 
         -- TODO: What was this doing before?
 --        opts <- getIdeOptions
+        liftIO $ print file
+        liftIO $ print val
         return (Just (BS.pack (show ( hash (snd val)))), val)
 
 getHiFileRule :: Rules ()
