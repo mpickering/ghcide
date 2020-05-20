@@ -248,7 +248,7 @@ getParsedModuleRule = defineEarlyCutoff $ \GetParsedModule file -> do
     let hsc = hscEnv sess
         -- After parsing the module remove all package imports referring to
         -- these packages as we have already dealt with what they map to.
-        comp_pkgs = map (fst . mkImportDirs) (deps sess)
+        comp_pkgs = mapMaybe (fmap fst . mkImportDirs) (deps sess)
     opt <- getIdeOptions
     (_, contents) <- getFileContents file
 
@@ -676,7 +676,7 @@ getModIfaceRule = define $ \GetModIface f -> do
             let hsc = hscEnv sess
                 -- After parsing the module remove all package imports referring to
                 -- these packages as we have already dealt with what they map to.
-                comp_pkgs = map (fst . mkImportDirs) (deps sess)
+                comp_pkgs = mapMaybe (fmap fst . mkImportDirs) (deps sess)
             opt <- getIdeOptions
             (_, contents) <- getFileContents f
             -- Embed --haddocks in the interface file
