@@ -202,6 +202,7 @@ setFileModified state prop nfp = do
 typecheckParents :: NormalizedFilePath -> Action ()
 typecheckParents nfp = do
     revs <- reverseDependencies nfp <$> useNoFile_ GetModuleGraph
+    void $ use_ IntensionalConstraints nfp
     liftIO $ print (length revs)
     void $ uses GetModIface revs
 

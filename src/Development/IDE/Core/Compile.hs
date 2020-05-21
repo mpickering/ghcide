@@ -24,6 +24,7 @@ module Development.IDE.Core.Compile
   , loadInterface
   , loadDepModule
   , loadModuleHome
+  , doIntensionalConstraints
   ) where
 
 import Development.IDE.Core.RuleTypes
@@ -84,6 +85,7 @@ import Data.Either.Extra (maybeToEither)
 import Control.DeepSeq (rnf)
 import Control.Exception (evaluate)
 import Exception (ExceptionMonad)
+import Lib
 
 
 -- | Given a string buffer, return the string (after preprocessing) and the 'ParsedModule'.
@@ -159,6 +161,61 @@ initPlugins modSummary = do
 -- This is required for template Haskell to work but we disable this in DAML.
 -- See #256
 newtype RunSimplifier = RunSimplifier Bool
+
+runCoreM' :: CoreM a -> HscEnv -> ModGuts -> IO a
+runCoreM' act hsc_env guts@(ModGuts { mg_module  = mod
+                                , mg_loc     = loc
+                                , mg_deps    = deps
+                                , mg_rdr_env = rdr_env })
+  = do { -- make sure all plugins are loaded
+
+       ; let orph_mods = mkModuleSet (mod : dep_orphs deps)
+       ; uniq_mask <-  mkSplitUniqSupply 's'
+       ;
+       ; (guts2, stats) <- runCoreM hsc_env hpt_rule_base uniq_mask mod
+                                    orph_mods print_unqual loc $ act
+
+       ; return guts2 }
+  where
+    dflags         = hsc_dflags hsc_env
+    home_pkg_rules = hptRules hsc_env (dep_mods deps)
+    hpt_rule_base  = mkRuleBase home_pkg_rules
+    print_unqual   = mkPrintUnqualified dflags rdr_env
+    -- mod: get the module out of the current HscEnv so we can retrieve it from the monad.
+    -- This is very convienent for the users of the monad (e.g. plugins do not have to
+    -- consume the ModGuts to find the module) but somewhat ugly because mg_module may
+    -- _theoretically_ be changed during the Core pipeline (it's part of ModGuts), which
+    -- would mean our cached value would go out of date.
+
+-- | Compile a single type-checked module to a 'CoreModule' value, or
+-- provide errors.
+doIntensionalConstraints
+    :: ConstraintsMap
+    -> HscEnv
+    -> [(ModSummary, HomeModInfo)]
+    -> TcModuleResult
+    -> IO (IdeResult NConstraintsMap)
+doIntensionalConstraints all_env packageState deps tmr =
+    fmap (either (, Nothing) id) $
+    evalGhcEnv packageState $
+        catchSrcErrors "compile" $ do
+            setupEnv (deps ++ [(tmrModSummary tmr, tmrModInfo tmr)])
+            dflags <- getDynFlags
+            let tm = tmrModule tmr
+            session <- getSession
+            (warnings,desugar) <- withWarnings "compile" $ \tweak -> do
+                let pm = tm_parsed_module tm
+                let pm' = pm{pm_mod_summary = tweak $ pm_mod_summary pm}
+                let tm' = tm{tm_parsed_module  = pm'}
+                GHC.dm_core_module <$> GHC.desugarModule tm'
+            res <- liftIO $ runCoreM' (ghcideEntry all_env desugar)
+                              packageState desugar
+            return $ case res of
+              Left e ->
+                let s = showSDocUnqual dflags (ppr e)
+                in (diagFromString "intensional-constraints" DsWarning (errorLoc e) s
+                   , Nothing)
+              Right r -> ([], Just (NConstraintsMap r))
 
 -- | Compile a single type-checked module to a 'CoreModule' value, or
 -- provide errors.

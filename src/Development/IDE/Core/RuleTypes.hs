@@ -28,6 +28,7 @@ import HscTypes (CgGuts, Linkable, HomeModInfo, ModDetails)
 import           Development.IDE.Spans.Common
 import           Development.IDE.Import.FindImports (ArtifactsLocation)
 import Development.IDE.GHC.Compat (RefMap, HieFile)
+import Lib
 
 -- NOTATION
 --   Foo+ means Foo for the dependencies
@@ -105,6 +106,17 @@ type instance RuleResult GetDocMap = PDocMap
 
 -- | Convert to Core, requires TypeCheck*
 type instance RuleResult GenerateCore = (SafeHaskellMode, CgGuts, ModDetails)
+
+type instance RuleResult IntensionalConstraints = NConstraintsMap
+
+newtype NConstraintsMap = NConstraintsMap { unwrapConstraintsMap :: ConstraintsMap }
+
+instance Show NConstraintsMap where
+  show _ = "ConstraintsMap"
+
+instance NFData NConstraintsMap where
+  rnf = rwhnf
+
 
 -- | Generate byte code for template haskell.
 type instance RuleResult GenerateByteCode = Linkable
@@ -198,6 +210,12 @@ data GenerateCore = GenerateCore
 instance Hashable GenerateCore
 instance NFData   GenerateCore
 instance Binary   GenerateCore
+
+data IntensionalConstraints = IntensionalConstraints
+    deriving (Eq, Show, Typeable, Generic)
+instance Hashable IntensionalConstraints
+instance NFData   IntensionalConstraints
+instance Binary   IntensionalConstraints
 
 data GenerateByteCode = GenerateByteCode
    deriving (Eq, Show, Typeable, Generic)

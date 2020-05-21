@@ -85,6 +85,8 @@ import System.Time.Extra
 import Control.Monad.Reader
 import System.Directory ( getModificationTime )
 import Control.Exception
+import Lib
+import qualified Data.Map as M
 
 -- | This is useful for rules to convert rules that can only produce errors or
 -- a result into the more general IdeResult type that supports producing
@@ -536,6 +538,20 @@ typeCheckRuleDefinition file pm generateArtifacts = do
     xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
 
 
+intensionalConstraints :: NormalizedFilePath
+                       -> Action (IdeResult NConstraintsMap)
+intensionalConstraints nfp = do
+    deps <- use_ GetDependencies nfp
+    sess <- hscEnv <$> use_ GhcSession nfp
+    dep_env <- uses_ IntensionalConstraints (transitiveModuleDeps deps)
+    (tm:tms) <- uses_ TypeCheck (nfp:transitiveModuleDeps deps)
+    tc <- use_ TypeCheck nfp
+    let all_env = M.unions (map unwrapConstraintsMap dep_env)
+    liftIO $ doIntensionalConstraints all_env sess [(tmrModSummary x, tmrModInfo x) | x <- tms] tc
+
+ic = define $ \IntensionalConstraints -> intensionalConstraints
+
+
 generateCore :: RunSimplifier -> NormalizedFilePath -> Action (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
 generateCore runSimplifier file = do
     deps <- use_ GetDependencies file
@@ -721,3 +737,4 @@ mainRule = do
     isFileOfInterestRule
     getModSummaryRule
     getModuleGraphRule
+    ic
