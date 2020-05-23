@@ -133,7 +133,7 @@ getDefinition file pos = runMaybeT $ do
     AtPoint.gotoDefinition (getHieFile ide file) opts (spansExprs spans) pos
 
 getHieFile
-  :: IdeState
+  :: ShakeExtras
   -> NormalizedFilePath -- ^ file we're editing
   -> Module -- ^ module dep we want info for
   -> MaybeT IdeAction (HieFile, FilePath) -- ^ hie stuff for the module
@@ -175,7 +175,7 @@ getHomeHieFile f = do
       liftIO $ loadHieFile hie_f
 
 
-getPackageHieFile :: IdeState
+getPackageHieFile :: ShakeExtras
                   -> Module             -- ^ Package Module to load .hie file for
                   -> NormalizedFilePath -- ^ Path of home module importing the package module
                   -> MaybeT IdeAction (HieFile, FilePath)
