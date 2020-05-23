@@ -69,4 +69,4 @@ logAndRunRequest label getResults ide pos path = do
   logInfo (ideLogger ide) $
     label <> " request at position " <> T.pack (showPosition pos) <>
     " in file: " <> T.pack path
-  runIdeAction (T.unpack label) ide (getResults filePath pos)
+  runIdeAction (T.unpack label) (shakeExtras ide) (getResults filePath pos)

@@ -98,7 +98,7 @@ codeLens _lsp ideState CodeLensParams{_textDocument=TextDocumentIdentifier uri} 
     fmap (Right . List) $ case uriToFilePath' uri of
       Just (toNormalizedFilePath' -> filePath) -> do
         -- Needs to be delayed action
-        _ <- runIdeAction "codeLens" ideState $ (runMaybeT $ useE TypeCheck filePath)
+        _ <- runIdeAction "codeLens" (shakeExtras ideState) $ (runMaybeT $ useE TypeCheck filePath)
         diag <- getDiagnostics ideState
         hDiag <- getHiddenDiagnostics ideState
         pure

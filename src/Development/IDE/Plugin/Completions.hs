@@ -49,14 +49,11 @@ produceCompletions =
         deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
         parsedDeps <- mapMaybe (fmap fst) <$> usesWithStale GetParsedModule (transitiveModuleDeps deps)
 #endif
-        tm <- fmap fst <$> useWithStale TypeCheck file
-        packageState <- fmap (hscEnv . fst) <$> useWithStale GhcSession file
-        case (tm, packageState) of
-            (Just tm', Just packageState') -> do
-                cdata <- liftIO $ cacheDataProducer packageState'
-                                                    (tmrModule tm') parsedDeps
-                return ([], Just cdata)
-            _ -> return ([], Nothing)
+        tm <- fst <$> useWithStale TypeCheck file
+        packageState <- hscEnv . fst <$> useWithStale GhcSession file
+        cdata <- liftIO $ cacheDataProducer packageState
+                                            (tmrModule tm) parsedDeps
+        return ([], Just cdata)
 
 
 -- | Produce completions info for a file
@@ -87,8 +84,8 @@ getCompletionsLSP lsp ide
       fmap Right $ case (contents, uriToFilePath' uri) of
         (Just cnts, Just path) -> do
           let npath = toNormalizedFilePath' path
-          (ideOpts, compls) <- runIdeAction "Completion" ide $ do
-              opts <- liftIO $ getIdeOptionsIO ide
+          (ideOpts, compls) <- runIdeAction "Completion" (shakeExtras ide) $ do
+              opts <- liftIO $ getIdeOptionsIO $ shakeExtras ide
               compls <- useWithStaleFast ProduceCompletions npath
               pm <- useWithStaleFast GetParsedModule npath
               pure (opts, liftA2 (,) compls pm)

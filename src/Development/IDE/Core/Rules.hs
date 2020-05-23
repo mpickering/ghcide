@@ -152,7 +152,7 @@ highlightAtPoint file pos = runMaybeT $ do
     AtPoint.documentHighlight hf rf pos'
 
 getHieFile
-  :: IdeState
+  :: ShakeExtras
   -> NormalizedFilePath -- ^ file we're editing
   -> Module -- ^ module dep we want info for
   -> MaybeT IdeAction (HieFile, FilePath) -- ^ hie stuff for the module
@@ -197,7 +197,7 @@ getHomeHieFile f = do
           MaybeT $ pure $ join mhf
 
 
-getPackageHieFile :: IdeState
+getPackageHieFile :: ShakeExtras
                   -> Module             -- ^ Package Module to load .hie file for
                   -> NormalizedFilePath -- ^ Path of home module importing the package module
                   -> MaybeT IdeAction (HieFile, FilePath)
@@ -460,7 +460,7 @@ getDocMapRule =
       hsc <- hscEnv <$> use_ GhcSession file
       PRefMap rf <- use_ GetRefMap file
 
-      deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
+      (deps,_) <- useWithStale GetDependencies file
       let tdeps = transitiveModuleDeps deps
 
 -- When possible, rely on the haddocks embedded in our interface files

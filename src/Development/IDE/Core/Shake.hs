@@ -34,6 +34,7 @@ module Development.IDE.Core.Shake(
     getDiagnostics, unsafeClearDiagnostics,
     getHiddenDiagnostics,
     IsIdeGlobal, addIdeGlobal, addIdeGlobalExtras, getIdeGlobalState, getIdeGlobalAction,
+    getIdeGlobalExtras,
     garbageCollect,
     knownFiles,
     setPriority,
@@ -47,7 +48,8 @@ module Development.IDE.Core.Shake(
     OnDiskRule(..),
 
     workerThread, delay, DelayedAction, mkDelayedAction,
-    IdeAction(..), runIdeAction, askShake, mkUpdater
+    IdeAction(..), runIdeAction, askShake, mkUpdater,
+    addPersistentRule
     ) where
 
 import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
@@ -105,6 +107,8 @@ import NameCache
 import UniqSupply
 import PrelInfo
 
+import System.IO
+
 -- information we stash inside the shakeExtra field
 data ShakeExtras = ShakeExtras
     {eventer :: LSP.FromServerMessage -> IO ()
@@ -126,7 +130,10 @@ data ShakeExtras = ShakeExtras
     -- ^ How many rules are running for each file
     , queue :: ShakeQueue
     , ideNc :: IORef NameCache
+    , persistentKeys :: Var (HMap.HashMap Key GetStalePersistent)
     }
+
+type GetStalePersistent = NormalizedFilePath -> IdeAction (Maybe Dynamic)
 
 getShakeExtras :: Action ShakeExtras
 getShakeExtras = do
@@ -137,6 +144,13 @@ getShakeExtrasRules :: Rules ShakeExtras
 getShakeExtrasRules = do
     Just x <- getShakeExtraRules @ShakeExtras
     return x
+
+addPersistentRule :: IdeRule k v => k -> (NormalizedFilePath -> IdeAction (Maybe v)) -> Rules ()
+addPersistentRule k getVal = do
+  ShakeExtras{persistentKeys} <- getShakeExtrasRules
+  liftIO $ modifyVar_ persistentKeys $ \hm -> do
+    pure $ HMap.insert (Key k) (\f -> fmap toDyn <$> getVal f) hm
+  return ()
 
 class Typeable a => IsIdeGlobal a where
 
@@ -206,20 +220,35 @@ currentValue Failed = Nothing
 
 -- | Return the most recent, potentially stale, value and a PositionMapping
 -- for the version of that value.
-lastValueIO :: ShakeExtras -> NormalizedFilePath -> Value v -> IO (Maybe (v, PositionMapping))
-lastValueIO ShakeExtras{positionMapping} file v = do
-    allMappings <- liftIO $ readVar positionMapping
-    pure $ case v of
-        Succeeded ver v -> Just (v, mappingForVersion allMappings file ver)
-        Stale ver v -> Just (v, mappingForVersion allMappings file ver)
-        Failed -> Nothing
+lastValueIO :: IdeRule k v => ShakeExtras -> k -> NormalizedFilePath -> IO (Maybe (v, PositionMapping))
+lastValueIO s@ShakeExtras{positionMapping,persistentKeys,state} k file = do
+  modifyVar state $ \hm -> do
+    allMappings <- readVar positionMapping
+    let readPersistent = do
+          pmap <- readVar persistentKeys
+          mv <- runMaybeT $ do
+            f <- MaybeT $ pure $ HMap.lookup (Key k) pmap
+            liftIO $ hPutStrLn stderr $ "LOOKUP UP PERSISTENT FOR" ++ show k
+            dv <- MaybeT $ runIdeAction "lastValueIO" s $ f file
+            MaybeT $ pure $ fromDynamic dv
+          case mv of
+            Nothing -> pure (hm,Nothing)
+            Just v -> pure (HMap.insert (file,Key k) (Stale Nothing (toDyn v)) hm, Just (v,zeroMapping))
+    case HMap.lookup (file,Key k) hm of
+      Nothing -> readPersistent
+      Just v -> case v of
+        Succeeded ver (fromDynamic -> Just v) -> pure (hm, Just (v, mappingForVersion allMappings file ver))
+        Stale ver (fromDynamic -> Just v) -> pure (hm, Just (v, mappingForVersion allMappings file ver))
+        _ -> do
+          hPutStrLn stderr "FAILED, LOOKING UP PERSISTENT"
+          readPersistent
 
 -- | Return the most recent, potentially stale, value and a PositionMapping
 -- for the version of that value.
-lastValue :: NormalizedFilePath -> Value v -> Action (Maybe (v, PositionMapping))
-lastValue file v = do
+lastValue :: IdeRule k v => k -> NormalizedFilePath -> Value v -> Action (Maybe (v, PositionMapping))
+lastValue key file v = do
     s <- getShakeExtras
-    liftIO $ lastValueIO s file v
+    liftIO $ lastValueIO s key file
 
 valueVersion :: Value v -> Maybe TextDocumentVersion
 valueVersion = \case
@@ -537,6 +566,7 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
         hiddenDiagnostics <- newVar mempty
         publishedDiagnostics <- newVar mempty
         positionMapping <- newVar HMap.empty
+        persistentKeys <- newVar HMap.empty
         let queue = shakeQueue
         pure ShakeExtras{..}
     (shakeDb, shakeClose) <-
@@ -614,7 +644,7 @@ shakeShut IdeState{..} = withMVar shakeAbort $ \stop -> do
 -- has already finished as is the case with useWithStaleFast
 delayedAction :: DelayedAction () -> IdeAction ()
 delayedAction a = do
-  sq <- shakeQueue <$> ask
+  sq <- queue <$> ask
   void $ liftIO $ queueAction [a] sq
 
 -- | A varient of delayedAction for the Action monad
@@ -733,19 +763,21 @@ use :: IdeRule k v
 use key file = head <$> uses key [file]
 
 useWithStale :: IdeRule k v
-    => k -> NormalizedFilePath -> Action (Maybe (v, PositionMapping))
-useWithStale key file = head <$> usesWithStale key [file]
+    => k -> NormalizedFilePath -> Action (v, PositionMapping)
+useWithStale key file = do
+  Just v <- head <$> usesWithStale key [file]
+  pure v
 
-newtype IdeAction a = IdeAction { runIdeActionT  :: (ReaderT IdeState IO) a }
-    deriving (MonadReader IdeState, MonadIO, Functor, Applicative, Monad)
+newtype IdeAction a = IdeAction { runIdeActionT  :: (ReaderT ShakeExtras IO) a }
+    deriving (MonadReader ShakeExtras, MonadIO, Functor, Applicative, Monad)
 
-runIdeAction :: String -> IdeState -> IdeAction a -> IO a
+runIdeAction :: String -> ShakeExtras -> IdeAction a -> IO a
 runIdeAction _herald s i = do
     res <- runReaderT (runIdeActionT i) s
     return res
 
 askShake :: IdeAction ShakeExtras
-askShake = shakeExtras <$> ask
+askShake = ask
 
 mkUpdater :: MaybeT IdeAction NameCacheUpdater
 mkUpdater = do
@@ -761,19 +793,9 @@ useWithStaleFast' key file = do
     -- This lookup directly looks up the key in the shake database and
     -- returns the last value that was computed for this key without
     -- checking freshness.
+    s <- askShake
+    liftIO $ lastValueIO s key file
 
-    s@ShakeExtras{state} <- askShake
-    r <- liftIO $ getValues state key file
-    case r of
-      Nothing -> do
-        -- Perhaps for Hover this should return Nothing immediatey but for
-        -- completions it should block? Not for MP to decide, need AZ and
-        -- F to comment
-        return Nothing
-        --useWithStale key file
-      -- Otherwise, use the computed value even if it's out of date.
-      Just v -> do
-        liftIO $ lastValueIO s file v
   -- Then async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
@@ -856,7 +878,7 @@ usesWithStale :: IdeRule k v
     => k -> [NormalizedFilePath] -> Action [Maybe (v, PositionMapping)]
 usesWithStale key files = do
     values <- map (\(A value _) -> value) <$> apply (map (Q . (key,)) files)
-    zipWithM lastValue files values
+    zipWithM (lastValue key) files values
 
 
 withProgress :: (Eq a, Hashable a) => Var (HMap.HashMap a Int) -> a -> Action b -> Action b
