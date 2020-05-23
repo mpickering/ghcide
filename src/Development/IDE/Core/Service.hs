@@ -87,7 +87,7 @@ getIdeOptions = do
     GlobalIdeOptions x <- getIdeGlobalAction
     return x
 
-getIdeOptionsIO :: IdeState -> IO IdeOptions
+getIdeOptionsIO :: ShakeExtras -> IO IdeOptions
 getIdeOptionsIO ide = do
-    GlobalIdeOptions x <- getIdeGlobalState ide
+    GlobalIdeOptions x <- getIdeGlobalExtras ide
     return x
