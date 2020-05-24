@@ -25,7 +25,6 @@ module Development.IDE.Core.Rules(
     highlightAtPoint,
     getDependencies,
     getParsedModule,
-    generateCore,
     ) where
 
 import Fingerprint
@@ -66,6 +65,7 @@ import Development.IDE.Core.RuleTypes
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Core.PositionMapping
 import           Language.Haskell.LSP.Types
+import Data.Ord
 
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
@@ -509,13 +509,14 @@ typeCheckRuleDefinition file pm generateArtifacts = do
   deps <- use_ GetDependencies file
   hsc  <- hscEnv <$> use_ GhcSession file
   -- Figure out whether we need TemplateHaskell or QuasiQuotes support
+  -- hsc_mod_graph is never populated, this is bogus
   let graph_needs_th_qq = needsTemplateHaskellOrQQ $ hsc_mod_graph hsc
       file_uses_th_qq   = uses_th_qq $ ms_hspp_opts (pm_mod_summary pm)
       any_uses_th_qq    = graph_needs_th_qq || file_uses_th_qq
   mirs      <- uses_ GetModIface (transitiveModuleDeps deps)
   bytecodes <- if any_uses_th_qq
     then -- If we use TH or QQ, we must obtain the bytecode
-      fmap Just <$> uses_ GenerateByteCode (transitiveModuleDeps deps)
+      fmap Just <$> uses_ GetObjectFile (transitiveModuleDeps deps)
     else
       pure $ repeat Nothing
 
@@ -528,21 +529,21 @@ typeCheckRuleDefinition file pm generateArtifacts = do
       (diags, Just (hsc,tcm)) | DoGenerateInterfaceFiles <- generateArtifacts -> do
         (diagsHie,hf) <- generateAndWriteHieFile hsc (tmrModule tcm)
         diagsHi  <- generateAndWriteHiFile hsc tcm
-        return (diags <> diagsHi <> diagsHie, Just tcm{tmrHieFile=hf})
+        diagsO <- liftIO $ generateAndWriteOFile hsc tcm
+        return (diags <> diagsHi <> diagsHie <> diagsO, Just tcm { tmrHieFile = hf })
       (diags, res) -> return (diags, snd <$> res)
  where
   unpack HiFileResult{..} bc = (hirModSummary, (hirModIface, bc))
   uses_th_qq dflags =
     xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
 
-
 generateCore :: RunSimplifier -> NormalizedFilePath -> Action (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
 generateCore runSimplifier file = do
-    deps <- use_ GetDependencies file
-    (tm:tms) <- uses_ TypeCheck (file:transitiveModuleDeps deps)
+    -- deps <- use_ GetDependencies file
+    tm <- use_ TypeCheck file
     setPriority priorityGenerateCore
     packageState <- hscEnv <$> use_ GhcSession file
-    liftIO $ compileModule runSimplifier packageState [(tmrModSummary x, tmrModInfo x) | x <- tms] tm
+    liftIO $ compileModule runSimplifier packageState tm
 
 generateCoreRule :: Rules ()
 generateCoreRule =
@@ -556,6 +557,55 @@ generateByteCodeRule =
       session <- hscEnv <$> use_ GhcSession file
       (_, guts, _) <- use_ GenerateCore file
       liftIO $ generateByteCode session [(tmrModSummary x, tmrModInfo x) | x <- tms] tm guts
+
+
+getObjectFileRule :: Rules ()
+getObjectFileRule = define $ \GetObjectFile f -> do
+  -- get all dependencies interface files, to check for freshness
+  (deps,_) <- use_ GetLocatedImports f
+  depOs  <- traverse (use GetObjectFile) (mapMaybe (fmap artifactFilePath . snd) deps)
+
+  ms      <- use_ GetModSummary f
+  let oFile = case ms_hsc_src ms of
+                HsBootFile -> addBootSuffix (ml_obj_file $ ms_location ms)
+                _ -> ml_obj_file $ ms_location ms
+
+      mkDiag = pure . ideErrorWithSource (Just "object file loading") (Just DsInfo) f . T.pack
+
+  res <-
+    case sequence depOs of
+        Nothing -> do
+              let d = mkDiag $ "Missing dependencies for object file: " <> oFile
+              pure (d, Nothing)
+        Just _deps -> do
+          gotOFile <- getFileExists $ toNormalizedFilePath oFile
+          if not gotOFile
+            then do
+              let d = mkDiag ("Missing object file: " <> oFile)
+              pure (d, Nothing)
+            else do
+              oVersion  <- use_ GetModificationTime $ toNormalizedFilePath oFile
+              modVersion <- use_ GetModificationTime f
+              let sourceModified = LT == comparing modificationTime oVersion modVersion
+              if sourceModified
+                then do
+                  let d = mkDiag ("Stale o file: " <> oFile)
+                  pure (d, Nothing)
+                else do
+                  let linkable = LM (error "don'tlook") (ms_mod ms) ([DotO oFile])
+                  return ([], Just linkable)
+  let raw_diags = fst res
+  case snd res of
+    Just o -> return (raw_diags, Just o)
+    -- Need to regenerate it for some reason
+    Nothing -> do
+      pm <- use_ GetParsedModule f
+      (diags, mtmr) <- typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
+      case mtmr of
+        Nothing -> return (raw_diags ++ diags, Nothing)
+        Just _tmr -> do
+          let linkable = LM (error "don't check") (ms_mod ms) [DotO oFile]
+          return (diags, Just $ linkable)
 
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.
@@ -715,6 +765,7 @@ mainRule = do
     getDocMapRule
     generateCoreRule
     generateByteCodeRule
+    getObjectFileRule
     loadGhcSession
     getHiFileRule
     getModIfaceRule

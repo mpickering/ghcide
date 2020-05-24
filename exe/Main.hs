@@ -246,6 +246,7 @@ targetToFile _ (TargetFile f _) = do
 setNameCache :: IORef NameCache -> HscEnv -> HscEnv
 setNameCache nc hsc = hsc { hsc_NC = nc }
 
+
 -- This is the key function which implements multi-component support. All
 -- components mapping to the same hie,yaml file are mapped to the same
 -- HscEnv which is updated as new components are discovered.
@@ -505,6 +506,7 @@ setCacheDir prefix hscComponents comps dflags = do
     pure $ dflags
           & setHiDir cacheDir
           & setDefaultHieDir cacheDir
+          & setODir cacheDir
 
 
 renderCradleError :: NormalizedFilePath -> CradleError -> FileDiagnostic
@@ -576,7 +578,7 @@ setOptions (ComponentOptions theOpts compRoot _) dflags = do
           -- also, it can confuse the interface stale check
           dontWriteHieFiles $
           setIgnoreInterfacePragmas $
-          setLinkerOptions $
+          --setLinkerOptions $
           disableOptimisation dflags'
     -- initPackages parses the -package flags and
     -- sets up the visibility for each component.
@@ -588,12 +590,14 @@ setOptions (ComponentOptions theOpts compRoot _) dflags = do
 -- we don't want to generate object code so we compile to bytecode
 -- (HscInterpreted) which implies LinkInMemory
 -- HscInterpreted
+{-
 setLinkerOptions :: DynFlags -> DynFlags
 setLinkerOptions df = df {
     ghcLink   = LinkInMemory
   , hscTarget = HscNothing
   , ghcMode = CompManager
   }
+  -}
 
 setIgnoreInterfacePragmas :: DynFlags -> DynFlags
 setIgnoreInterfacePragmas df =
@@ -606,6 +610,11 @@ setHiDir :: FilePath -> DynFlags -> DynFlags
 setHiDir f d =
     -- override user settings to avoid conflicts leading to recompilation
     d { hiDir      = Just f}
+
+setODir :: FilePath -> DynFlags -> DynFlags
+setODir f d =
+    -- override user settings to avoid conflicts leading to recompilation
+    d { objectDir      = Just f}
 
 getCacheDir :: String -> [String] -> IO FilePath
 getCacheDir prefix opts = IO.getXdgDirectory IO.XdgCache (cacheDir </> prefix ++ "-" ++ opts_hash)
