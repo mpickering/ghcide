@@ -740,7 +740,7 @@ publishDiagnosticsNotification uri diags =
 newtype Priority = Priority Double
 
 setPriority :: Priority -> Action ()
-setPriority (Priority p) = deprioritize p
+setPriority (Priority p) = reschedule p
 
 sendEvent :: LSP.FromServerMessage -> Action ()
 sendEvent e = do
