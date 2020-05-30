@@ -80,7 +80,7 @@ import Utils
 ghcideVersion :: IO String
 ghcideVersion = do
   path <- getExecutablePath
-  let gitHashSection = case "" of
+  let gitHashSection = case $(gitHash) of
         x | x == "UNKNOWN" -> ""
         x -> " (GIT hash: " <> x <> ")"
   return $ "ghcide version: " <> showVersion version
