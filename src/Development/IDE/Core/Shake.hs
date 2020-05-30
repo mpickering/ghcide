@@ -757,6 +757,9 @@ askShake = shakeExtras <$> ask
 -- A (maybe) stale result now, and an up to date one later
 data FastResult a = FastResult { stale :: Maybe (a,PositionMapping), uptoDate :: Barrier (Maybe a)  }
 
+useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
+useWithStaleFast key file = stale <$> useWithStaleFast' key file
+
 useWithStaleFast' :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (FastResult v)
 useWithStaleFast' key file = do
   final_res <-  do
@@ -782,6 +785,8 @@ useWithStaleFast' key file = do
   b <- liftIO $ newBarrier
   delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (use key file >>= liftIO . signalBarrier b))
   return (FastResult final_res b)
+
+
 
 -- MattP: Removed the distinction between runAction and runActionSync
 -- as it is no longer necessary now the are no `action` rules. This is how
