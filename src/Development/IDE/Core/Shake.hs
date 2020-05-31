@@ -863,12 +863,15 @@ withProgress :: (Eq a, Hashable a) => Var (HMap.HashMap a Int) -> a -> Action b 
 withProgress var file = actionBracket (f succ) (const $ f pred) . const
     where f shift = modifyVar_ var $ \x -> return (HMap.alter (\x -> Just (shift (fromMaybe 0 x))) file x)
 
+-- | Open an OpenTelemetry span around an action. Similar to opentelemetry's withSpan_, but specialized to Action
+withSpanAction_ :: String -> Action a -> Action a
+withSpanAction_ label action = actionBracket (beginSpan label) endSpan (const action)
 
 defineEarlyCutoff
     :: IdeRule k v
     => (k -> NormalizedFilePath -> Action (Maybe BS.ByteString, IdeResult v))
     -> Rules ()
-defineEarlyCutoff op = addBuiltinRule noLint noIdentity $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> do
+defineEarlyCutoff op = addBuiltinRule noLint noIdentity $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> withSpanAction_ (show (key,file)) $ do
     extras@ShakeExtras{state, inProgress} <- getShakeExtras
     -- don't do progress for GetFileExists, as there are lots of non-nodes for just that one key
     (if show key == "GetFileExists" then id else withProgress inProgress file) $ do
