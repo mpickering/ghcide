@@ -114,6 +114,8 @@ library
         Development.IDE.Core.RuleTypes
         Development.IDE.Core.Service
         Development.IDE.Core.Shake
+        Development.IDE.Core.Shake.Key
+        Development.IDE.Core.Shake.Queue
         Development.IDE.GHC.Error
         Development.IDE.GHC.Util
         Development.IDE.Import.DependencyInformation
