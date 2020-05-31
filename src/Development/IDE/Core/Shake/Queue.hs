@@ -9,7 +9,15 @@
 
 -- | The ShakeQueue which mediates communication between the server and
 -- shake database.
-module Development.IDE.Core.Shake.Queue where
+module Development.IDE.Core.Shake.Queue(ShakeQueue(..)
+                                       , newShakeQueue
+                                       , DelayedAction(..)
+                                       , mkDelayedAction
+                                       , queueAction
+                                       , getQueueWork
+                                       , logDelayedAction
+                                       , requeueIfCancelled
+                                       ) where
 
 import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
 import           Development.Shake.Classes
@@ -24,6 +32,7 @@ import           Control.Monad.Extra
 import qualified Data.HashPSQ as PQ
 
 
+-- | A priority measure for an action in the queue
 data QPriority = QPriority { retries :: Int
                            , qid :: Int
                            , qimportant :: Bool } deriving Eq
@@ -178,4 +187,7 @@ getWork n p =
         (p', as) = smallestK n p
         after_size = PQ.size p'
     in (p', ((before_size, after_size), as))
+
+getQueueWork :: ShakeQueue -> IO (QueueInfo, [DelayedActionInternal])
+getQueueWork ShakeQueue{..} = modifyVar qactions (return . getWork 500)
 

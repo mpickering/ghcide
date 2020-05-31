@@ -241,7 +241,7 @@ data IdeState = IdeState
 workerThread :: IdeState -> IO ()
 workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
     -- I choose 20 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
-    (info, ds) <- modifyVar qactions (return . getWork 500)
+    (info, ds) <- getQueueWork sq
     case ds of
         -- Nothing to do, wait until some work is available.
         [] -> takeMVar qTrigger
@@ -250,15 +250,13 @@ workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
             -- This is the only usage of shakeRun in the entire application
             -- which ensures that we don't call it concurrently.
             (cancel, wait) <- shakeRun Debug "batch" i (map (logDelayedAction (logger shakeExtras)) ds)
+            -- What to do if abort is called
             writeVar qabort (\k -> do
                 k
                 cancel
                 mapM_ (requeueIfCancelled sq) ds)
-            res <- try wait
-            case res of
-                -- Really don't want an exception to kill this thread but not sure where it should go
-                Left (e :: SomeException) -> return ()
-                Right r -> return ()
+            -- shakeRun already catches exceptions from the actions
+            _res <- wait
             -- Action finished, nothing to abort now
             writeVar qabort id
             return ()
