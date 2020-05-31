@@ -63,7 +63,6 @@ import Data.Map.Strict (Map)
 import           Data.List.Extra (partition, takeEnd)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Data.Traversable (for)
 import Data.Tuple.Extra
 import Data.Unique
 import Development.IDE.Core.Debouncer
@@ -262,18 +261,6 @@ workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
             return ()
 
 
-
--- This is debugging code that generates a series of profiles, if the Boolean is true
-shakeRunDatabaseProfile :: Maybe FilePath -> ShakeDatabase -> [Action a] -> IO (([a], [IO ()]), Maybe FilePath)
-shakeRunDatabaseProfile mbProfileDir shakeDb acts = do
-        (time, res) <- duration $ shakeRunDatabase shakeDb acts
-        proFile <- for mbProfileDir $ \dir -> do
-                count <- modifyVar profileCounter $ \x -> let !y = x+1 in return (y,y)
-                let file = "ide-" ++ profileStartTime ++ "-" ++ takeEnd 5 ("0000" ++ show count) ++ "-" ++ showDP 2 time <.> "html"
-                shakeProfileDatabase shakeDb $ dir </> file
-                return (dir </> file)
-        return (res, proFile)
-
 -- Write a profile of the last action to be completed
 shakeWriteProfile :: String -> ShakeDatabase -> Seconds -> FilePath -> IO FilePath
 shakeWriteProfile herald shakeDb time dir = do
@@ -426,16 +413,6 @@ shakeShut IdeState{..} = withMVar shakeAbort $ \stop -> do
     -- request so we first abort that.
     stop
     shakeClose
-
--- | This is a variant of withMVar where the first argument is run unmasked and if it throws
--- an exception, the previous value is restored while the second argument is executed masked.
-withMVar' :: MVar a -> (a -> IO ()) -> IO (a, c) -> IO c
-withMVar' var unmasked masked = mask $ \restore -> do
-    a <- takeMVar var
-    restore (unmasked a) `onException` putMVar var a
-    (a', c) <- masked
-    putMVar var a'
-    pure c
 
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
