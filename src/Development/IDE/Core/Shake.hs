@@ -35,6 +35,9 @@ module Development.IDE.Core.Shake(
     getHiddenDiagnostics,
     IsIdeGlobal, addIdeGlobal, addIdeGlobalExtras, getIdeGlobalState, getIdeGlobalAction,
     getIdeGlobalExtras,
+    getIdeOptions,
+    getIdeOptionsIO,
+    GlobalIdeOptions(..),
     garbageCollect,
     setPriority,
     sendEvent,
@@ -153,6 +156,18 @@ getIdeGlobalAction = liftIO . getIdeGlobalExtras =<< getShakeExtras
 getIdeGlobalState :: forall a . IsIdeGlobal a => IdeState -> IO a
 getIdeGlobalState = getIdeGlobalExtras . shakeExtras
 
+newtype GlobalIdeOptions = GlobalIdeOptions IdeOptions
+instance IsIdeGlobal GlobalIdeOptions
+
+getIdeOptions :: Action IdeOptions
+getIdeOptions = do
+    GlobalIdeOptions x <- getIdeGlobalAction
+    return x
+
+getIdeOptionsIO :: ShakeExtras -> IO IdeOptions
+getIdeOptionsIO ide = do
+    GlobalIdeOptions x <- getIdeGlobalExtras ide
+    return x
 
 -- | The state of the all values.
 type Values = HMap.HashMap (NormalizedFilePath, Key) (Value Dynamic)
@@ -568,10 +583,21 @@ useWithStaleFast' key file = do
     r <- liftIO $ getValues state key file
     case r of
       Nothing -> do
+        testing <- liftIO $ optTesting <$> getIdeOptionsIO s
+        if testing
+        then do
+          b <- liftIO $ queueAction [mkDelayedAction ("T:" ++ (show key)) (key, file) Debug (use key file)] (queue s)
+          _ <- liftIO $ waitBarrier $ head b
+          r <- liftIO $ getValues state key file
+          case r of
+            Nothing -> return Nothing
+            Just v -> do
+              liftIO $ lastValueIO s file v
+         else
         -- Perhaps for Hover this should return Nothing immediatey but for
         -- completions it should block? Not for MP to decide, need AZ and
         -- F to comment
-        return Nothing
+           return Nothing
         --useWithStale key file
       -- Otherwise, use the computed value even if it's out of date.
       Just v -> do

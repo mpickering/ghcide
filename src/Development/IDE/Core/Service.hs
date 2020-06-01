@@ -38,9 +38,6 @@ import GHC.Conc
 
 
 
-newtype GlobalIdeOptions = GlobalIdeOptions IdeOptions
-instance IsIdeGlobal GlobalIdeOptions
-
 ------------------------------------------------------------
 -- Exposed API
 
@@ -82,13 +79,3 @@ writeProfile = shakeProfile
 shutdown :: IdeState -> IO ()
 shutdown = shakeShut
 
-
-getIdeOptions :: Action IdeOptions
-getIdeOptions = do
-    GlobalIdeOptions x <- getIdeGlobalAction
-    return x
-
-getIdeOptionsIO :: ShakeExtras -> IO IdeOptions
-getIdeOptionsIO ide = do
-    GlobalIdeOptions x <- getIdeGlobalExtras ide
-    return x
