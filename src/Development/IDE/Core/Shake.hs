@@ -285,8 +285,6 @@ setValues :: IdeRule k v
           -> IO ()
 setValues state key file val = modifyVar_ state $ \vals -> do
     -- Force to make sure the old HashMap is not retained
-    --let size = HMap.size vals
-    --traceEventIO ("METRIC:" ++ show size)
     evaluate $ HMap.insert (file, Key key) (fmap toDyn val) vals
 
 -- | Delete the value stored for a given ide build key
@@ -333,7 +331,6 @@ shakeOpen :: IO LSP.LspId
           -> IO IdeState
 shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) opts rules = do
     inProgress <- newVar HMap.empty
-    shakeAbort <- newMVar $ return ()
     shakeQueue <- newShakeQueue
     shakeExtras <- do
         globals <- newVar HMap.empty
@@ -464,50 +461,40 @@ shakeRun :: Logger.Priority
                                 -- and don't make much sense to normal
                                 -- users.
          -> IdeState -> [Action a] -> IO (IO (), IO [a])
-shakeRun p herald IdeState{shakeExtras=ShakeExtras{..},..} acts  =
-    {-
-    withMVar'
-        abort
-        (\stop -> do
-              (stopTime,_) <- duration stop
-              return ()
-              logPriority logger p $ T.pack $ "start shakeRun: " ++ herald ++ " (abort time:" ++ showDuration stopTime ++ ")"
-        )
-        -- It is crucial to be masked here, otherwise we can get killed
-        -- between spawning the new thread and updating shakeAbort.
-        -- See https://github.com/digital-asset/ghcide/issues/79
-        -}
-        (do
-              aThread <- asyncWithUnmask $ \restore -> do
-                    -- Try to run the action and record how long it took
-                   (runTime, res) <- duration $ try (restore $ shakeRunDatabase shakeDb acts)
+shakeRun p herald IdeState{shakeExtras=ShakeExtras{..},..} acts  = do
+  -- It is crucial to be masked here, otherwise we can get killed
+  -- between spawning the new thread and updating shakeAbort.
+  -- See https://github.com/digital-asset/ghcide/issues/79
+  aThread <- asyncWithUnmask $ \restore -> do
+        -- Try to run the action and record how long it took
+       (runTime, res) <- duration $ try (restore $ shakeRunDatabase shakeDb acts)
 
-                   -- Write a profile when the action completed normally
-                   profile <- case res of
-                     Left {}  -> return ""
-                     Right {} -> do
-                      mfp <- forM shakeProfileDir (shakeWriteProfile herald shakeDb runTime)
-                      case mfp of
-                        Just fp ->  return $
-                          let link = case filePathToUri' $ toNormalizedFilePath' fp of
-                                                NormalizedUri _ x -> x
-                          in ", profile saved at " <> T.unpack link
-                        Nothing -> return ""
+       -- Write a profile when the action completed normally
+       profile <- case res of
+         Left {}  -> return ""
+         Right {} -> do
+          mfp <- forM shakeProfileDir (shakeWriteProfile herald shakeDb runTime)
+          case mfp of
+            Just fp ->  return $
+              let link = case filePathToUri' $ toNormalizedFilePath' fp of
+                                    NormalizedUri _ x -> x
+              in ", profile saved at " <> T.unpack link
+            Nothing -> return ""
 
-                   let res' = case res of
-                            Left e -> "exception: " <> displayException e
-                            Right _ -> "completed"
-                   logPriority logger p $ T.pack $
-                        "finish shakeRun: " ++ herald ++ " (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
-                   return res
-              let wrapUp res = either (throwIO @SomeException) return res
-              -- An action which can be used to block on the result of
-              -- shakeRun returning
-              let k = do
-                        (res, as) <- (wrapUp =<< wait aThread)
-                        sequence_ as
-                        return res
-              pure (cancel aThread, k))
+       let res' = case res of
+                Left e -> "exception: " <> displayException e
+                Right _ -> "completed"
+       logPriority logger p $ T.pack $
+            "finish shakeRun: " ++ herald ++ " (took " ++ showDuration runTime ++ ", " ++ res' ++ profile ++ ")"
+       return res
+  let wrapUp res = either (throwIO @SomeException) return res
+  -- An action which can be used to block on the result of
+  -- shakeRun returning
+  let k = do
+            (res, as) <- (wrapUp =<< wait aThread)
+            sequence_ as
+            return res
+  pure (cancel aThread, k)
 
 getDiagnostics :: IdeState -> IO [FileDiagnostic]
 getDiagnostics IdeState{shakeExtras = ShakeExtras{diagnostics}} = do
