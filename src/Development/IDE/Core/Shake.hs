@@ -21,7 +21,7 @@
 --   always stored as real Haskell values, whereas Shake serialises all 'A' values
 --   between runs. To deserialise a Shake value, we just consult Values.
 module Development.IDE.Core.Shake(
-    IdeState, shakeExtras,
+    IdeState(otSessionSpan), shakeExtras,
     ShakeExtras(..), getShakeExtras, getShakeExtrasRules,
     IdeRule, IdeResult, GetModificationTime(..),
     shakeOpen, shakeShut,
@@ -254,6 +254,7 @@ data IdeState = IdeState
     ,shakeQueue :: ShakeQueue
     ,shakeExtras :: ShakeExtras
     ,shakeProfileDir :: Maybe FilePath
+    ,otSessionSpan :: SpanInFlight
     }
 
 
@@ -521,10 +522,11 @@ shakeOpen :: IO LSP.LspId
           -> Debouncer NormalizedUri
           -> Maybe FilePath
           -> IdeReportProgress
+          -> SpanInFlight
           -> ShakeOptions
           -> Rules ()
           -> IO IdeState
-shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) opts rules = do
+shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) otSessionSpan opts rules = do
     inProgress <- newVar HMap.empty
     shakeAbort <- newMVar $ return ()
     shakeQueue <- newShakeQueue

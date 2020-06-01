@@ -30,7 +30,8 @@ import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 
-import           Development.IDE.Core.Shake
+import Development.IDE.Core.Shake
+import OpenTelemetry.Eventlog
 import Control.Concurrent.Async
 import Control.Monad
 import GHC.Conc
@@ -52,8 +53,9 @@ initialise :: LSP.ClientCapabilities
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> VFSHandle
+           -> SpanInFlight
            -> IO (IdeState, Async ())
-initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
+initialise caps mainRule getLspId toDiags logger debouncer options vfs otSessionSpan = do
     ide <- shakeOpen
         getLspId
         toDiags
@@ -61,6 +63,7 @@ initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
         debouncer
         (optShakeProfiling options)
         (optReportProgress options)
+        otSessionSpan
         shakeOptions
           { shakeThreads = optThreads options
           , shakeFiles   = fromMaybe "/dev/null" (optShakeFiles options)
