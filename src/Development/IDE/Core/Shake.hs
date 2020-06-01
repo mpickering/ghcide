@@ -270,7 +270,7 @@ workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..},..} = do
                 cancel
                 mapM_ (requeueIfCancelled sq) ds)
             -- shakeRun already catches exceptions from the actions
-            _res <- wait
+            _res <- try @SomeException wait
             -- Action finished, nothing to abort now
             writeVar qabort id
             return ()
