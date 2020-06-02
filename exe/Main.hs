@@ -127,9 +127,10 @@ main = do
                     , optTesting        = argsTesting
                     , optThreads        = argsThreads
                     }
+                logLevel = if argsVerbose then minBound else Info
             debouncer <- newAsyncDebouncer
-            initialise caps (mainRule >> pluginRules plugins >> action kick)
-                getLspId event (logger minBound) debouncer options vfs
+            fst <$> initialise caps (mainRule >> pluginRules plugins)
+                      getLspId event (logger logLevel) debouncer options vfs
     else do
         -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
         hSetEncoding stdout utf8
@@ -152,17 +153,18 @@ main = do
         putStrLn "\nStep 3/4: Initializing the IDE"
         vfs <- makeVFSHandle
         debouncer <- newAsyncDebouncer
-        ide <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ loadSessionShake dir) vfs
+        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Info) debouncer (defaultIdeOptions $ loadSessionShake dir) vfs
 
         putStrLn "\nStep 4/4: Type checking the files"
         setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files
-        results <- runActionSync ide $ uses TypeCheck (map toNormalizedFilePath' files)
+        results <- runActionSync "User TypeCheck" ide $ uses TypeCheck (map toNormalizedFilePath' files)
         let (worked, failed) = partition fst $ zip (map isJust results) files
         when (failed /= []) $
             putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
 
         let files xs = let n = length xs in if n == 1 then "1 file" else show n ++ " files"
         putStrLn $ "\nCompleted (" ++ files worked ++ " worked, " ++ files failed ++ " failed)"
+        cancel worker
         return ()
 
 expandFiles :: [FilePath] -> IO [FilePath]
@@ -177,11 +179,13 @@ expandFiles = concatMapM $ \x -> do
             fail $ "Couldn't find any .hs/.lhs files inside directory: " ++ x
         return files
 
-
+-- Running this every hover is too expensive, 0.2s on GHC for example
+{-
 kick :: Action ()
 kick = do
     files <- getFilesOfInterest
     void $ uses TypeCheck $ HashSet.toList files
+    -}
 
 -- | Print an LSP event.
 showEvent :: Lock -> FromServerMessage -> IO ()

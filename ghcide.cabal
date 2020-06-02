@@ -69,7 +69,8 @@ library
         transformers,
         unordered-containers >= 0.2.10.0,
         utf8-string,
-        hslogger
+        hslogger,
+        psqueues
     if flag(ghc-lib)
       build-depends:
         ghc-lib >= 8.8,
@@ -119,6 +120,8 @@ library
         Development.IDE.Core.RuleTypes
         Development.IDE.Core.Service
         Development.IDE.Core.Shake
+        Development.IDE.Core.Shake.Key
+        Development.IDE.Core.Shake.Queue
         Development.IDE.GHC.Error
         Development.IDE.GHC.Util
         Development.IDE.Import.DependencyInformation
