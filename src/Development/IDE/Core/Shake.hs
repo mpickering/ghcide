@@ -29,7 +29,7 @@ module Development.IDE.Core.Shake(
     shakeOpen, shakeShut,
     shakeRestart,
     shakeEnqueue,
-    shakeRunInternal, shakeRunInternalKill, shakeRunUser,
+    shakeRunInternal, shakeRunUser,
     shakeProfile,
     use, useWithStale, useNoFile, uses, usesWithStale, useWithStaleFast, useWithStaleFast', delayedAction,
     FastResult(..),
@@ -132,9 +132,8 @@ data ShakeExtras = ShakeExtras
     -- ^ Whether to send Progress messages to the client
     ,ideTesting :: IdeTesting
     -- ^ Whether to enable additional lsp messages used by the test suite for checking invariants
-    ,restartShakeSession :: [Action ()] -> IO ()
+    ,session :: MVar ShakeSession
     -- ^ Used in the GhcSession rule to forcefully restart the session after adding a new component
-    , queue :: ShakeQueue
     }
 
 getShakeExtras :: Action ShakeExtras
@@ -262,9 +261,9 @@ type IdeRule k v =
 -- | A live Shake session with the ability to enqueue Actions for running.
 --   Keeps the 'ShakeDatabase' open, so at most one 'ShakeSession' per database.
 data ShakeSession = ShakeSession
-  { cancelShakeSession :: !(IO [Action ()])
+  { cancelShakeSession :: !(IO [DelayedActionInternal])
     -- ^ Closes the Shake session and returns the pending user actions
-  , runInShakeSession  :: !(forall a . Logger.Priority -> String -> (Action a) -> IO (IO a))
+  , runInShakeSession  :: !(forall a . DelayedAction a -> IO (IO a))
     -- ^ Enqueue an action in the Shake session.
   }
 
@@ -277,14 +276,14 @@ data IdeState = IdeState
     {shakeDb :: ShakeDatabase
     ,shakeSession :: MVar ShakeSession
     ,shakeClose :: IO ()
-    ,shakeQueue :: ShakeQueue
     ,shakeExtras :: ShakeExtras
     ,shakeProfileDir :: Maybe FilePath
     }
 
 
+workerThread = undefined
 
--- | A thread which continually reads from the queue running shake actions
+{-
 workerThread :: IdeState -> IO ()
 workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..}, ..} = do
     -- I choose 20 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
@@ -302,10 +301,11 @@ workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..}, ..} = do
                 cancel
                 mapM_ (requeueIfCancelled sq) ds)
             -- shakeRun already catches exceptions from the actions
-            _res <- try @SomeException (sequence wait)
+            _res <- (sequence wait)
             -- Action finished, nothing to abort now
             writeVar qabort id
             return ()
+            -}
 
 
 
@@ -383,7 +383,7 @@ shakeOpen :: IO LSP.LspId
           -> IO IdeState
 shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) ideTesting opts rules = mdo
     inProgress <- newVar HMap.empty
-    shakeQueue <- newShakeQueue
+    shakeSession <- newMVar emptyShakeSession
     shakeExtras <- do
         globals <- newVar HMap.empty
         state <- newVar HMap.empty
@@ -392,13 +392,12 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
         publishedDiagnostics <- newVar mempty
         positionMapping <- newVar HMap.empty
         let restartShakeSession = shakeRestart ideState
-        let queue = shakeQueue
+        let session = shakeSession
         pure ShakeExtras{..}
     (shakeDbM, shakeClose) <-
         shakeOpenDatabase
             opts { shakeExtra = addShakeExtra shakeExtras $ shakeExtra opts }
             rules
-    shakeSession <- newMVar emptyShakeSession
     shakeDb <- shakeDbM
     let ideState = IdeState{..}
     return ideState
@@ -477,48 +476,45 @@ withMVar' var unmasked masked = mask $ \restore -> do
 -- has already finished as is the case with useWithStaleFast
 delayedAction :: DelayedAction () -> IdeAction ()
 delayedAction a = do
-  sq <- queue <$> ask
-  void $ liftIO $ queueAction [a] sq
+  sq <- session <$> ask
+  void $ liftIO $ shakeEnqueueSession sq a
 
 -- | A varient of delayedAction for the Action monad
 -- The supplied action *will* be run but at least not until the current action has finished.
-delay :: (Typeable k, Show k, Hashable k, Eq k)
-      => String -> k -> Action () -> Action ()
-delay herald k a = do
-    ShakeExtras{queue} <- getShakeExtras
-    let da = mkDelayedAction herald (Key k) Info a
+delay :: String -> Action () -> Action ()
+delay herald a = do
+    ShakeExtras{session} <- getShakeExtras
+    let da = mkDelayedAction herald Info a
     -- Do not wait for the action to return
-    void $ liftIO $ queueAction [da] queue
+    void $ liftIO $ shakeEnqueueSession session da
 
 -- | Running an action which DIRECTLY corresponds to something a user did,
 -- for example computing hover information.
 shakeRunUser :: IdeState -> [DelayedAction a] -> IO ([IO a])
-shakeRunUser ide as = do
-    bs <- queueAction as (shakeQueue ide)
-    return $ map waitBarrier bs
+shakeRunUser ide as = mapM (shakeEnqueue ide) as
 
 -- | Running an action which is INTERNAL to shake, for example, a file has
 -- been modified, basically any use of shakeRun which is not blocking (ie
 -- which is not called via runAction).
 shakeRunInternal :: IdeState -> [DelayedAction a] -> IO ()
-shakeRunInternal ide as = void $ queueAction as (shakeQueue ide)
+shakeRunInternal ide as = void $ shakeRunUser ide as
 
 -- | Like shakeRun internal but kill ongoing work first
 -- This is for things like file modifications which usually invalidate
 -- existing work which is going on.
-shakeRunInternalKill :: IdeState -> [DelayedAction a] -> IO ()
-shakeRunInternalKill ide as = do
+--shakeRunInternalKill :: IdeState -> [DelayedAction a] -> IO ()
+--shakeRunInternalKill ide as = do
     -- TODO: There is a race here if the actions get queued
     -- and start to run before the kill, sh
-    let k = shakeRunInternal ide as
-    kill <- readVar (qabort (shakeQueue ide))
-    kill k
+ --   let k = shakeRunInternal ide as
+ --   kill <- readVar (qabort (shakeQueue ide))
+  --  kill k
 
 -- | Restart the current 'ShakeSession' with the given system actions.
 --   Any computation running in the current session will be aborted,
 --   but user actions (added via 'shakeEnqueue') will be requeued.
 --   Progress is reported only on the system actions.
-shakeRestart :: IdeState -> [Action ()] -> IO ()
+shakeRestart :: IdeState -> [DelayedActionInternal] -> IO ()
 shakeRestart it@IdeState{shakeExtras=ShakeExtras{logger}, ..} systemActs =
     withMVar'
         shakeSession
@@ -537,22 +533,25 @@ shakeRestart it@IdeState{shakeExtras=ShakeExtras{logger}, ..} systemActs =
 --   Assumes a 'ShakeSession' is available.
 --
 --   Appropriate for user actions other than edits.
-shakeEnqueue :: Logger.Priority -> String -> IdeState -> Action a -> IO (IO a)
-shakeEnqueue p herald IdeState{shakeSession} act =
-    withMVar shakeSession $ \s -> runInShakeSession s p herald act
+shakeEnqueue :: IdeState -> DelayedAction a -> IO (IO a)
+shakeEnqueue IdeState{shakeSession} act = shakeEnqueueSession shakeSession act
+
+shakeEnqueueSession :: MVar ShakeSession -> DelayedAction a -> IO (IO a)
+shakeEnqueueSession sess act = withMVar sess $ \s -> runInShakeSession s act
 
 -- Set up a new 'ShakeSession' with a set of initial system and user actions
 -- Will crash if there is an existing 'ShakeSession' running.
 -- Progress is reported only on the system actions.
 -- Only user actions will get re-enqueued
-newSession :: IdeState -> [Action ()] -> [Action ()] -> IO ShakeSession
+newSession :: IdeState -> [DelayedActionInternal] -> [DelayedActionInternal] -> IO ShakeSession
 newSession IdeState{shakeExtras=ShakeExtras{..}, ..} systemActs userActs = do
     -- A work queue for actions added via 'runInShakeSession'
-    actionQueue :: TQueue (Action ()) <- atomically $ do
+    qcount <- newVar 0
+    actionQueue :: TQueue DelayedActionInternal <- atomically $ do
         q <- newTQueue
         traverse_ (writeTQueue q) userActs
         return q
-    actionInProgress :: TVar (Maybe (Action())) <- newTVarIO Nothing
+    actionInProgress :: TVar (Maybe DelayedActionInternal) <- newTVarIO Nothing
 
     let
         -- A daemon-like action used to inject additional work
@@ -562,7 +561,7 @@ newSession IdeState{shakeExtras=ShakeExtras{..}, ..} systemActs userActs = do
                 join $ liftIO $ atomically $ do
                     act <- readTQueue actionQueue
                     writeTVar actionInProgress $ Just act
-                    return act
+                    return (getAction act)
                 liftIO $ atomically $ writeTVar actionInProgress Nothing
 
         progressRun
@@ -575,7 +574,7 @@ newSession IdeState{shakeExtras=ShakeExtras{..}, ..} systemActs userActs = do
         workRun restore = withAsync progressRun $ \progressThread -> do
           let systemActs' =
                 [ [] <$ pumpAction
-                , parallel systemActs
+                , parallel (map getAction systemActs)
                     -- Only system actions are considered for progress reporting
                     -- When done, cancel the progressThread to indicate completion
                     <* liftIO (cancel progressThread)
@@ -602,17 +601,18 @@ newSession IdeState{shakeExtras=ShakeExtras{..}, ..} systemActs userActs = do
     -- run the wrap up unmasked
     _ <- async $ join $ wait workThread
 
+
     -- 'runInShakeSession' is used to append work in this Shake session
     --  The session stays open until 'cancelShakeSession' is called
-    let runInShakeSession :: forall a . Logger.Priority -> String -> Action a -> IO (IO a)
-        runInShakeSession p herald act = do
-              res <- newBarrier
-              let act' = actionCatch @SomeException (Right <$> act) (pure . Left)
-              atomically $ writeTQueue actionQueue (act' >>= liftIO . signalBarrier res)
-              return (waitBarrier res >>= either throwIO return)
+    let runInShakeSession :: forall a . DelayedAction a -> IO (IO a)
+        runInShakeSession da = do
+              (b, dai) <- instantiateDelayedAction qcount da
+              atomically $ writeTQueue actionQueue dai
+              return (waitBarrier b >>= either throwIO return)
 
     --  Cancelling is required to flush the Shake database when either
     --  the filesystem or the Ghc configuration have changed
+        cancelShakeSession :: IO [DelayedActionInternal]
         cancelShakeSession = do
             cancel workThread
             atomically $ do
@@ -621,6 +621,21 @@ newSession IdeState{shakeExtras=ShakeExtras{..}, ..} systemActs userActs = do
                 return (maybe [] pure c ++ q)
 
     pure (ShakeSession{..})
+
+instantiateDelayedAction :: Var Int
+                         -> DelayedAction a
+                         -> IO (Barrier (Either SomeException a), DelayedActionInternal)
+instantiateDelayedAction idVar (DelayedAction s p a) = do
+    b <- newBarrier
+    i <- freshId idVar
+    let a' = do r <- actionCatch @SomeException (Right <$> a) (pure . Left)
+                liftIO $ signalBarrier b r
+    let d = DelayedActionInternal s p a' i (QPriority 0 i False) (return True) -- (finishedBarrier b)
+    return (b, d)
+
+freshId :: Var Int -> IO Int
+freshId qcount = do
+    modifyVar qcount (\n -> return (n + 1, n))
 
 getDiagnostics :: IdeState -> IO [FileDiagnostic]
 getDiagnostics IdeState{shakeExtras = ShakeExtras{diagnostics}} = do
@@ -697,8 +712,8 @@ useWithStaleFast' key file = do
         IdeTesting testing <- liftIO $ optTesting <$> getIdeOptionsIO s
         if testing
         then do
-          b <- liftIO $ queueAction [mkDelayedAction ("T:" ++ (show key)) (key, file) Debug (use key file)] (queue s)
-          _ <- liftIO $ waitBarrier $ head b
+          b <- liftIO $ shakeEnqueueSession (session s) (mkDelayedAction ("T:" ++ (show key))  Debug (use key file))
+          _ <- liftIO $ b
           r <- liftIO $ getValues state key file
           case r of
             Nothing -> return Nothing
@@ -717,7 +732,7 @@ useWithStaleFast' key file = do
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
   b <- liftIO $ newBarrier
-  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (use key file >>= liftIO . signalBarrier b))
+  delayedAction (mkDelayedAction ("C:" ++ (show key))  Debug (use key file >>= liftIO . signalBarrier b))
   return (FastResult final_res b)
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)

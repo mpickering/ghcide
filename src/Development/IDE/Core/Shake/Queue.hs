@@ -9,15 +9,7 @@
 
 -- | The ShakeQueue which mediates communication between the server and
 -- shake database.
-module Development.IDE.Core.Shake.Queue(ShakeQueue(..)
-                                       , newShakeQueue
-                                       , DelayedAction(..)
-                                       , mkDelayedAction
-                                       , queueAction
-                                       , getQueueWork
-                                       , logDelayedAction
-                                       , requeueIfCancelled
-                                       ) where
+module Development.IDE.Core.Shake.Queue (DelayedAction, DelayedActionInternal, pattern DelayedAction, pattern DelayedActionInternal, mkDelayedAction, QPriority(..), getAction) where
 
 import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
 import           Development.Shake.Classes
@@ -80,22 +72,20 @@ type DelayedAction a = DelayedActionX (Action a)
 type DelayedActionInternal = DelayedActionX DelayedActionExtra
 
 {-# COMPLETE DelayedActionInternal#-}
-pattern DelayedActionInternal :: String -> Key -> Logger.Priority -> Action () -> Int -> QPriority -> IO Bool -> DelayedActionX DelayedActionExtra
-pattern DelayedActionInternal {actionInternalName, actionInternalKey, actionInternalPriority, getAction
+pattern DelayedActionInternal :: String -> Logger.Priority -> Action () -> Int -> QPriority -> IO Bool -> DelayedActionX DelayedActionExtra
+pattern DelayedActionInternal {actionInternalName, actionInternalPriority, getAction
                               , actionId, actionQPriority, actionFinished}
-                              = DelayedActionX actionInternalName actionInternalKey actionInternalPriority
+                              = DelayedActionX actionInternalName  actionInternalPriority
                                     (DelayedActionExtra actionId actionQPriority actionFinished getAction)
 
 {-# COMPLETE DelayedAction#-}
-pattern DelayedAction :: String -> Key -> Logger.Priority -> Action a -> DelayedAction a
-pattern DelayedAction a b c d = DelayedActionX a b c d
+pattern DelayedAction :: String ->  Logger.Priority -> Action a -> DelayedAction a
+pattern DelayedAction a b c = DelayedActionX a b c
 
-mkDelayedAction :: (Show k, Typeable k, Hashable k, Eq k)
-                => String -> k -> Logger.Priority -> Action a -> DelayedAction a
-mkDelayedAction s k = DelayedAction s (Key k)
+mkDelayedAction :: String -> Logger.Priority -> Action a -> DelayedAction a
+mkDelayedAction = DelayedAction
 
 data DelayedActionX a = DelayedActionX { actionName :: String -- Name we show to the user
-                                      , actionKey :: Key
                                       -- The queue only contrains entries for
                                       -- unique key values.
                                       , actionPriority :: Logger.Priority
@@ -114,8 +104,6 @@ freshId :: ShakeQueue -> IO Int
 freshId (ShakeQueue{qcount}) = do
     modifyVar qcount (\n -> return (n + 1, n))
 
--- Could replace this argument with a parameterised version of
--- DelayedAction.
 queueAction :: [DelayedAction a]
                -> ShakeQueue
                -> IO [Barrier a]
@@ -131,7 +119,7 @@ insertMany ds pm = foldr (\d pm' -> PQ.insert (mkKid d) (getPriority d) d pm') p
 
 
 mkKid :: DelayedActionX DelayedActionExtra -> KeyWithId
-mkKid d = KeyWithId (actionKey d) (actionId d)
+mkKid d = KeyWithId (Key ()) (actionId d)
 
 queueDelayedAction :: DelayedActionInternal -> ShakeQueue -> IO ()
 queueDelayedAction d sq = do
@@ -143,12 +131,12 @@ getPriority :: DelayedActionInternal -> QPriority
 getPriority = actionQPriority
 
 instantiateDelayedAction :: ShakeQueue -> DelayedAction a -> IO (Barrier a, DelayedActionInternal)
-instantiateDelayedAction sq (DelayedAction s k p a) = do
+instantiateDelayedAction sq (DelayedAction s p a) = do
     b <- newBarrier
     i <- freshId sq
     let a' = do r <- a
                 liftIO $ signalBarrier b r
-    let d = DelayedActionInternal s k p a' i (QPriority 0 i False) (finishedBarrier b)
+    let d = DelayedActionInternal s p a' i (QPriority 0 i False) (finishedBarrier b)
     return (b, d)
 
 
