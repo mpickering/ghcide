@@ -374,7 +374,7 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
             rules
     shakeDb <- shakeDbM
     qcount <- newVar 0
-    initSession <- newSession shakeExtras shakeProfileDir shakeDb qcount [] []
+    initSession <- newSession (shakeExtras { reportProgress = False }) shakeProfileDir shakeDb qcount [] []
     shakeSession <- newMVar initSession
     let ideState = IdeState{..}
     return ideState
