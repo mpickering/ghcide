@@ -9,7 +9,7 @@
 
 -- | The ShakeQueue which mediates communication between the server and
 -- shake database.
-module Development.IDE.Core.Shake.Queue (DelayedAction, DelayedActionInternal, pattern DelayedAction, pattern DelayedActionInternal, mkDelayedAction, QPriority(..), getAction) where
+module Development.IDE.Core.Shake.Queue (DelayedAction, DelayedActionInternal, pattern DelayedAction, pattern DelayedActionInternal, mkDelayedAction, QPriority(..), getAction, actionName, actionPriority) where
 
 import           Development.Shake hiding (ShakeValue, doesFileExist, Info)
 import           Development.Shake.Classes
@@ -149,14 +149,6 @@ requeueIfCancelled sq d@(DelayedActionInternal{..}) = do
     is_finished <- actionFinished
     unless is_finished (queueDelayedAction d sq)
 
-logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
-logDelayedAction l d  = do
-    start <- liftIO $ offsetTime
-    getAction d
-    runTime <- liftIO $ start
-    return ()
-    liftIO $ logPriority l (actionPriority d) $ T.pack $
-        "finish: " ++ (actionName d) ++ " (took " ++ showDuration runTime ++ ")"
 
 -- | Retrieve up to k values from the map and return the modified map
 smallestK :: Int -> PriorityMap -> (PriorityMap, [DelayedActionInternal])

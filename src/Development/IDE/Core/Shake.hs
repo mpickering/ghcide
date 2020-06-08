@@ -539,7 +539,7 @@ newSession ShakeExtras{..} shakeProfileDir shakeDb qcount systemActs userActs = 
                 join $ liftIO $ atomically $ do
                     act <- readTQueue actionQueue
                     writeTVar actionInProgress $ Just act
-                    return (getAction act)
+                    return (logDelayedAction logger act)
                 liftIO $ atomically $ writeTVar actionInProgress Nothing
 
         progressRun
@@ -610,6 +610,15 @@ instantiateDelayedAction idVar (DelayedAction s p a) = do
                 liftIO $ signalBarrier b r
     let d = DelayedActionInternal s p a' i (QPriority 0 i False) (return True) -- (finishedBarrier b)
     return (b, d)
+
+logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
+logDelayedAction l d  = do
+    start <- liftIO $ offsetTime
+    getAction d
+    runTime <- liftIO $ start
+    return ()
+    liftIO $ logPriority l (actionPriority d) $ T.pack $
+        "finish: " ++ (actionName d) ++ " (took " ++ showDuration runTime ++ ")"
 
 freshId :: Var Int -> IO Int
 freshId qcount = do

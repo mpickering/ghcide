@@ -53,7 +53,6 @@ import           Data.Foldable
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntMap.Strict (IntMap)
 import Data.List
-import Data.Ord
 import qualified Data.Set                                 as Set
 import qualified Data.Text                                as T
 import           Development.IDE.GHC.Error
