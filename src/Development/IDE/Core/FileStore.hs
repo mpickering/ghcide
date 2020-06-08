@@ -189,8 +189,8 @@ setFileModified state nfp = do
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
-    let da = mkDelayedAction "FileStoreTC" (TypeCheck, nfp) L.Info (void $ use GetSpanInfo nfp)
-    shakeRunInternalKill state [da]
+    let da = mkDelayedAction "FileStoreTC" L.Info (void $ use GetSpanInfo nfp)
+    shakeRestart state [da]
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that

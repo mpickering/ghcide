@@ -49,7 +49,7 @@ initialise :: LSP.ClientCapabilities
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> VFSHandle
-           -> IO (IdeState, Async ())
+           -> IO IdeState
 initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
     ide <- shakeOpen
         getLspId
@@ -68,9 +68,7 @@ initialise caps mainRule getLspId toDiags logger debouncer options vfs = do
             ofInterestRules
             fileExistsRules getLspId caps vfs
             mainRule
-    tid <- async $ forever (workerThread ide)
-    labelThread (asyncThreadId tid) "ShakeWorker"
-    return (ide, tid)
+    return ide
 
 writeProfile :: IdeState -> FilePath -> IO ()
 writeProfile = shakeProfile
@@ -90,4 +88,5 @@ runAction = runActionSync
 -- finish running. This is mainly useful in tests, where you want
 -- to wait for all rules to fire so you can check diagnostics.
 runActionSync :: String -> IdeState -> Action a -> IO a
-runActionSync herald ide act = join $ shakeEnqueue Logger.Info herald ide act
+runActionSync herald ide act =
+  join $ shakeEnqueue ide (mkDelayedAction herald Logger.Info act)

@@ -53,7 +53,7 @@ module Development.IDE.Core.Shake(
     deleteValue,
     OnDiskRule(..),
 
-    workerThread, delay, DelayedAction, mkDelayedAction,
+    delay, DelayedAction, mkDelayedAction,
     IdeAction(..), runIdeAction
     ) where
 
@@ -134,6 +134,7 @@ data ShakeExtras = ShakeExtras
     -- ^ Whether to enable additional lsp messages used by the test suite for checking invariants
     ,session :: MVar ShakeSession
     -- ^ Used in the GhcSession rule to forcefully restart the session after adding a new component
+    ,restartShakeSession :: [DelayedAction ()] -> IO ()
     }
 
 getShakeExtras :: Action ShakeExtras
@@ -275,37 +276,11 @@ emptyShakeSession = ShakeSession (pure []) (\_ -> error "emptyShakeSession")
 data IdeState = IdeState
     {shakeDb :: ShakeDatabase
     ,shakeSession :: MVar ShakeSession
+    ,qcount :: Var Int
     ,shakeClose :: IO ()
     ,shakeExtras :: ShakeExtras
     ,shakeProfileDir :: Maybe FilePath
     }
-
-
-workerThread = undefined
-
-{-
-workerThread :: IdeState -> IO ()
-workerThread i@IdeState{shakeQueue=sq@ShakeQueue{..}, ..} = do
-    -- I choose 20 here but may be better to just chuck the whole thing to shake as it will paralellise the work itself.
-    (info, ds) <- getQueueWork sq
-    case ds of
-        -- Nothing to do, wait until some work is available.
-        [] -> takeMVar qTrigger
-        _ -> do
-            logDebug (logger shakeExtras) (T.pack $ "Starting: " ++ show info ++ ":" ++ show ds)
---            (cancel, wait) <- runInShakeSession Debug "batch" i (map (logDelayedAction (logger shakeExtras)) ds)
-            wait <- mapM (shakeEnqueue Debug "batch" i . logDelayedAction (logger shakeExtras)) ds
-            let cancel = return ()
-            writeVar qabort (\k -> do
-                k
-                cancel
-                mapM_ (requeueIfCancelled sq) ds)
-            -- shakeRun already catches exceptions from the actions
-            _res <- (sequence wait)
-            -- Action finished, nothing to abort now
-            writeVar qabort id
-            return ()
-            -}
 
 
 
@@ -383,7 +358,6 @@ shakeOpen :: IO LSP.LspId
           -> IO IdeState
 shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress reportProgress) ideTesting opts rules = mdo
     inProgress <- newVar HMap.empty
-    shakeSession <- newMVar emptyShakeSession
     shakeExtras <- do
         globals <- newVar HMap.empty
         state <- newVar HMap.empty
@@ -399,6 +373,9 @@ shakeOpen getLspId eventer logger debouncer shakeProfileDir (IdeReportProgress r
             opts { shakeExtra = addShakeExtra shakeExtras $ shakeExtra opts }
             rules
     shakeDb <- shakeDbM
+    qcount <- newVar 0
+    initSession <- newSession shakeExtras shakeProfileDir shakeDb qcount [] []
+    shakeSession <- newMVar initSession
     let ideState = IdeState{..}
     return ideState
 
@@ -514,19 +491,21 @@ shakeRunInternal ide as = void $ shakeRunUser ide as
 --   Any computation running in the current session will be aborted,
 --   but user actions (added via 'shakeEnqueue') will be requeued.
 --   Progress is reported only on the system actions.
-shakeRestart :: IdeState -> [DelayedActionInternal] -> IO ()
-shakeRestart it@IdeState{shakeExtras=ShakeExtras{logger}, ..} systemActs =
+shakeRestart :: IdeState -> [DelayedAction a] -> IO ()
+shakeRestart it@IdeState{..} systemActs =
     withMVar'
         shakeSession
         (\runner -> do
               (stopTime,queue) <- duration (cancelShakeSession runner)
-              logDebug logger $ T.pack $ "Restarting build session (aborting the previous one took " ++ showDuration stopTime ++ ")"
+              logDebug (logger shakeExtras) $ T.pack $ "Restarting build session (aborting the previous one took " ++ showDuration stopTime ++ ")"
               return queue
         )
         -- It is crucial to be masked here, otherwise we can get killed
         -- between spawning the new thread and updating shakeSession.
         -- See https://github.com/digital-asset/ghcide/issues/79
-        (fmap (,()) . newSession it systemActs)
+        (\cancelled -> do
+          (_b, dai) <- unzip <$> mapM (instantiateDelayedAction qcount) systemActs
+          (,()) <$> newSession shakeExtras shakeProfileDir shakeDb qcount dai cancelled)
 
 -- | Enqueue an action in the existing 'ShakeSession'.
 --   Returns a computation to block until the action is run, propagating exceptions.
@@ -543,10 +522,9 @@ shakeEnqueueSession sess act = withMVar sess $ \s -> runInShakeSession s act
 -- Will crash if there is an existing 'ShakeSession' running.
 -- Progress is reported only on the system actions.
 -- Only user actions will get re-enqueued
-newSession :: IdeState -> [DelayedActionInternal] -> [DelayedActionInternal] -> IO ShakeSession
-newSession IdeState{shakeExtras=ShakeExtras{..}, ..} systemActs userActs = do
+newSession :: ShakeExtras -> Maybe FilePath -> ShakeDatabase -> Var Int -> [DelayedActionInternal] -> [DelayedActionInternal] -> IO ShakeSession
+newSession ShakeExtras{..} shakeProfileDir shakeDb qcount systemActs userActs = do
     -- A work queue for actions added via 'runInShakeSession'
-    qcount <- newVar 0
     actionQueue :: TQueue DelayedActionInternal <- atomically $ do
         q <- newTQueue
         traverse_ (writeTQueue q) userActs
