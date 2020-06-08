@@ -605,7 +605,7 @@ instantiateDelayedAction idVar (DelayedAction s p a) = do
     i <- freshId idVar
     let a' = do r <- actionCatch @SomeException (Right <$> a) (pure . Left)
                 liftIO $ signalBarrier b r
-    let d = DelayedActionInternal s p a' i (QPriority 0 i False) (return True) -- (finishedBarrier b)
+    let d = DelayedActionInternal s p a' i (return True) -- (finishedBarrier b)
     return (b, d)
 
 logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
