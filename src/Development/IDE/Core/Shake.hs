@@ -268,9 +268,6 @@ data ShakeSession = ShakeSession
     -- ^ Enqueue an action in the Shake session.
   }
 
-emptyShakeSession :: ShakeSession
-emptyShakeSession = ShakeSession (pure []) (\_ -> error "emptyShakeSession")
-
 -- | A Shake database plus persistent store. Can be thought of as storing
 --   mappings from @(FilePath, k)@ to @RuleResult k@.
 data IdeState = IdeState
@@ -451,10 +448,10 @@ withMVar' var unmasked masked = mask $ \restore -> do
 -- | These actions are run asynchronously after the current action is
 -- finished running. For example, to trigger a key build after a rule
 -- has already finished as is the case with useWithStaleFast
-delayedAction :: DelayedAction () -> IdeAction ()
+delayedAction :: DelayedAction a -> IdeAction (IO a)
 delayedAction a = do
   sq <- session <$> ask
-  void $ liftIO $ shakeEnqueueSession sq a
+  liftIO $ shakeEnqueueSession sq a
 
 -- | A varient of delayedAction for the Action monad
 -- The supplied action *will* be run but at least not until the current action has finished.
@@ -492,7 +489,7 @@ shakeRunInternal ide as = void $ shakeRunUser ide as
 --   but user actions (added via 'shakeEnqueue') will be requeued.
 --   Progress is reported only on the system actions.
 shakeRestart :: IdeState -> [DelayedAction a] -> IO ()
-shakeRestart it@IdeState{..} systemActs =
+shakeRestart IdeState{..} systemActs =
     withMVar'
         shakeSession
         (\runner -> do
@@ -680,47 +677,42 @@ askShake :: IdeAction ShakeExtras
 askShake = ask
 
 -- A (maybe) stale result now, and an up to date one later
-data FastResult a = FastResult { stale :: Maybe (a,PositionMapping), uptoDate :: Barrier (Maybe a)  }
+data FastResult a = FastResult { stale :: Maybe (a,PositionMapping), uptoDate :: IO (Maybe a)  }
 
 useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
 useWithStaleFast key file = stale <$> useWithStaleFast' key file
 
 useWithStaleFast' :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (FastResult v)
 useWithStaleFast' key file = do
-  final_res <-  do
-    -- This lookup directly looks up the key in the shake database and
-    -- returns the last value that was computed for this key without
-    -- checking freshness.
+  -- This lookup directly looks up the key in the shake database and
+  -- returns the last value that was computed for this key without
+  -- checking freshness.
 
-    s@ShakeExtras{state} <- askShake
-    r <- liftIO $ getValues state key file
-    case r of
-      Nothing -> do
-        IdeTesting testing <- liftIO $ optTesting <$> getIdeOptionsIO s
-        if testing
-        then do
-          b <- liftIO $ shakeEnqueueSession (session s) (mkDelayedAction ("T:" ++ (show key))  Debug (use key file))
-          _ <- liftIO $ b
-          r <- liftIO $ getValues state key file
-          case r of
-            Nothing -> return Nothing
-            Just v -> do
-              liftIO $ lastValueIO s file v
-         else
-        -- Perhaps for Hover this should return Nothing immediatey but for
-        -- completions it should block? Not for MP to decide, need AZ and
-        -- F to comment
-           return Nothing
-        --useWithStale key file
-      -- Otherwise, use the computed value even if it's out of date.
-      Just v -> do
-        liftIO $ lastValueIO s file v
-  -- Then async trigger the key to be built anyway because we want to
+  -- Async trigger the key to be built anyway because we want to
   -- keep updating the value in the key.
-  --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
-  b <- liftIO $ newBarrier
-  delayedAction (mkDelayedAction ("C:" ++ (show key))  Debug (use key file >>= liftIO . signalBarrier b))
-  return (FastResult final_res b)
+  wait <- delayedAction $ mkDelayedAction ("C:" ++ (show key)) Debug $ use key file
+
+  s@ShakeExtras{state} <- askShake
+  r <- liftIO $ getValues state key file
+  case r of
+    Nothing -> do
+      IdeTesting testing <- liftIO $ optTesting <$> getIdeOptionsIO s
+      if testing 
+      then do
+        -- If testing, block for the result if we haven't computed before
+        a <- liftIO wait
+        r <- liftIO $ getValues state key file
+        case r of
+          Nothing -> return $ FastResult Nothing (pure a)
+          Just v -> do
+            res <- liftIO $ lastValueIO s file v
+            pure $ FastResult res (pure a)
+      -- Perhaps we should do this while not testing too
+      else return $ FastResult Nothing wait
+    -- Otherwise, use the computed value even if it's out of date.
+    Just v -> do
+      res <- liftIO $ lastValueIO s file v
+      pure $ FastResult res wait
 
 useNoFile :: IdeRule k v => k -> Action (Maybe v)
 useNoFile key = use key emptyFilePath

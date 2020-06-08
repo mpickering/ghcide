@@ -164,13 +164,10 @@ getHomeHieFile f = do
       hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
       MaybeT $ return hf
     else do
-      -- Could block here with a barrier rather than fail
-      b <- liftIO $ newBarrier
-      lift $ delayedAction (mkDelayedAction "OutOfDateHie" L.Info
-                              (do pm <- use_ GetParsedModule f
-                                  typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
-                                  liftIO $ signalBarrier b ()))
-      () <- MaybeT $ liftIO $ timeout 1 $ waitBarrier b
+      wait <- lift $ delayedAction $ mkDelayedAction "OutOfDateHie" L.Info $ do
+        pm <- use_ GetParsedModule f
+        typeCheckRuleDefinition f pm DoGenerateInterfaceFiles
+      _ <- MaybeT $ liftIO $ timeout 1 $ wait
       liftIO $ loadHieFile hie_f
 
 
