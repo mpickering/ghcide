@@ -55,7 +55,6 @@ import HIE.Bios.Environment (addCmdOpts, makeDynFlagsAbsolute)
 import Paths_ghcide
 import Development.GitRev
 import Development.Shake (Action,  action)
-import OpenTelemetry.Eventlog
 import qualified Data.HashSet as HashSet
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as Map
@@ -128,7 +127,7 @@ main = do
         t <- offsetTime
         hPutStrLn stderr "Starting LSP server..."
         hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
-        runLanguageServer options (pluginHandler plugins) onInitialConfiguration onConfigurationChange $ \getLspId event vfs caps otSessionSpan -> do
+        runLanguageServer options (pluginHandler plugins) onInitialConfiguration onConfigurationChange $ \getLspId event vfs caps -> do
             t <- t
             hPutStrLn stderr $ "Started LSP server in " ++ showDuration t
             let options = (defaultIdeOptions $ loadSession dir)
@@ -141,7 +140,7 @@ main = do
                 logLevel = if argsVerbose then minBound else Info
             debouncer <- newAsyncDebouncer
             fst <$> initialise caps (mainRule >> pluginRules plugins)
-                      getLspId event (logger logLevel) debouncer options vfs otSessionSpan
+                      getLspId event (logger logLevel) debouncer options vfs
     else do
         -- GHC produces messages with UTF8 in them, so make sure the terminal doesn't error
         hSetEncoding stdout utf8
@@ -164,9 +163,7 @@ main = do
         putStrLn "\nStep 3/6: Initializing the IDE"
         vfs <- makeVFSHandle
         debouncer <- newAsyncDebouncer
-
-        otSessionSpan <- beginSpan "Session"
-        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Debug) debouncer (defaultIdeOptions $ loadSession dir) vfs otSessionSpan
+        (ide, worker) <- initialise def mainRule (pure $ IdInt 0) (showEvent lock) (logger Debug) debouncer (defaultIdeOptions $ loadSession dir) vfs
 
         putStrLn "\nStep 4/6: Type checking the files"
         setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath' files

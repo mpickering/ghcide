@@ -27,7 +27,6 @@ import qualified Data.Text as T
 import GHC.IO.Handle (hDuplicate)
 import System.IO
 import Control.Monad.Extra
-import OpenTelemetry.Eventlog
 
 import Development.IDE.Core.IdeConfiguration
 import Development.IDE.Core.Shake
@@ -45,7 +44,7 @@ runLanguageServer
     -> PartialHandlers config
     -> (InitializeRequest -> Either T.Text config)
     -> (DidChangeConfigurationNotification -> Either T.Text config)
-    -> (IO LspId -> (FromServerMessage -> IO ()) -> VFSHandle -> ClientCapabilities -> SpanInFlight -> IO IdeState)
+    -> (IO LspId -> (FromServerMessage -> IO ()) -> VFSHandle -> ClientCapabilities -> IO IdeState)
     -> IO ()
 runLanguageServer options userHandlers onInitialConfig onConfigChange getIdeState = do
     -- Move stdout to another file descriptor and duplicate stderr
@@ -112,29 +111,27 @@ runLanguageServer options userHandlers onInitialConfig onConfigChange getIdeStat
             -- out of order to be useful. Existing handlers are run afterwards.
     handlers <- parts WithMessage{withResponse, withNotification, withResponseAndRequest, withInitialize} def
 
-    otSessionSpan <- beginSpan "Session"
-
     let initializeCallbacks = LSP.InitializeCallbacks
             { LSP.onInitialConfiguration = onInitialConfig
             , LSP.onConfigurationChange = onConfigChange
-            , LSP.onStartup = handleInit (signalBarrier clientMsgBarrier ()) clearReqId waitForCancel clientMsgChan otSessionSpan
+            , LSP.onStartup = handleInit (signalBarrier clientMsgBarrier ()) clearReqId waitForCancel clientMsgChan
             }
 
-    void $ (waitAnyCancel =<< traverse async
-            [ void $ LSP.runWithHandles
-              stdin
-              newStdout
-              initializeCallbacks
-              handlers
-              (modifyOptions options)
-              Nothing
-            , void $ waitBarrier clientMsgBarrier
-            ]) `finally` (endSpan otSessionSpan)
+    void $ waitAnyCancel =<< traverse async
+        [ void $ LSP.runWithHandles
+            stdin
+            newStdout
+            initializeCallbacks
+            handlers
+            (modifyOptions options)
+            Nothing
+        , void $ waitBarrier clientMsgBarrier
+        ]
     where
-        handleInit :: IO () -> (LspId -> IO ()) -> (LspId -> IO ()) -> Chan (Message config) -> SpanInFlight -> LSP.LspFuncs config -> IO (Maybe err)
-        handleInit exitClientMsg clearReqId waitForCancel clientMsgChan otSessionSpan lspFuncs@LSP.LspFuncs{..} = do
+        handleInit :: IO () -> (LspId -> IO ()) -> (LspId -> IO ()) -> Chan (Message config) -> LSP.LspFuncs config -> IO (Maybe err)
+        handleInit exitClientMsg clearReqId waitForCancel clientMsgChan lspFuncs@LSP.LspFuncs{..} = do
 
-            ide <- getIdeState getNextReqId sendFunc (makeLSPVFSHandle lspFuncs) clientCapabilities otSessionSpan
+            ide <- getIdeState getNextReqId sendFunc (makeLSPVFSHandle lspFuncs) clientCapabilities
 
             _ <- flip forkFinally (const exitClientMsg) $ forever $ do
                 msg <- readChan clientMsgChan

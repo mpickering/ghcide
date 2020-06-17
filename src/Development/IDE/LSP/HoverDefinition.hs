@@ -24,7 +24,6 @@ import           Language.Haskell.LSP.Messages
 import           Language.Haskell.LSP.Types
 
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
 import OpenTelemetry.Eventlog
 
 gotoDefinition :: IdeState -> TextDocumentPositionParams -> IO (Either ResponseError LocationResponseParams)
@@ -60,7 +59,6 @@ request
   -> TextDocumentPositionParams
   -> IO (Either ResponseError b)
 request label getResults notFound found ide (TextDocumentPositionParams (TextDocumentIdentifier uri) pos _) = withSpan_ ("Request:" <> show label) $ do
-    addEvent (otSessionSpan ide) "Request" (T.encodeUtf8 label)
     mbResult <- case uriToFilePath' uri of
         Just path -> logAndRunRequest label getResults ide pos path
         Nothing   -> pure Nothing
