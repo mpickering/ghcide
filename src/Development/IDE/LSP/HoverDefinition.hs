@@ -59,7 +59,7 @@ request
   -> IdeState
   -> TextDocumentPositionParams
   -> IO (Either ResponseError b)
-request label getResults notFound found ide (TextDocumentPositionParams (TextDocumentIdentifier uri) pos _) = do
+request label getResults notFound found ide (TextDocumentPositionParams (TextDocumentIdentifier uri) pos _) = withSpan_ ("Request:" <> show label) $ do
     addEvent (otSessionSpan ide) "Request" (T.encodeUtf8 label)
     mbResult <- case uriToFilePath' uri of
         Just path -> logAndRunRequest label getResults ide pos path
