@@ -388,8 +388,7 @@ requeueIfCancelled sq d@(DelayedActionInternal{..}) = do
 logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
 logDelayedAction l d  = do
     start <- liftIO $ offsetTime
-    -- These traces go to the eventlog and can be interpreted with the opentelemetry library.
-    actionBracket (beginSpan (show $ actionKey d)) endSpan (const $ getAction d)
+    getAction d
     runTime <- liftIO $ start
     return ()
     liftIO $ logPriority l (actionPriority d) $ T.pack $
@@ -778,7 +777,7 @@ useWithStaleFast' key file = do
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
   b <- liftIO $ newBarrier
-  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (use key file >>= liftIO . signalBarrier b))
+  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (withSpanAction_ key file (use key file >>= liftIO . signalBarrier b)))
   return (FastResult final_res b)
 
 useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
