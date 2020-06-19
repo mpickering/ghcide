@@ -222,7 +222,8 @@ executable ghcide
         optparse-applicative,
         shake,
         text,
-        unordered-containers
+        unordered-containers,
+        opentelemetry >=0.4 && <0.5
     other-modules:
         Utils
         Arguments

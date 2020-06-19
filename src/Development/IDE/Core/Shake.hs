@@ -388,8 +388,7 @@ requeueIfCancelled sq d@(DelayedActionInternal{..}) = do
 logDelayedAction :: Logger -> DelayedActionInternal -> Action ()
 logDelayedAction l d  = do
     start <- liftIO $ offsetTime
-    -- These traces go to the eventlog and can be interpreted with the opentelemetry library.
-    actionBracket (beginSpan (show $ actionKey d)) endSpan (const $ getAction d)
+    getAction d
     runTime <- liftIO $ start
     return ()
     liftIO $ logPriority l (actionPriority d) $ T.pack $
@@ -778,7 +777,7 @@ useWithStaleFast' key file = do
   -- keep updating the value in the key.
   --shakeRunInternal ("C:" ++ (show key)) ide [use key file]
   b <- liftIO $ newBarrier
-  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (use key file >>= liftIO . signalBarrier b))
+  delayedAction (mkDelayedAction ("C:" ++ (show key)) (key, file) Debug (withSpanAction_ key file (use key file >>= liftIO . signalBarrier b)))
   return (FastResult final_res b)
 
 useWithStaleFast :: IdeRule k v => k -> NormalizedFilePath -> IdeAction (Maybe (v, PositionMapping))
@@ -863,12 +862,22 @@ withProgress :: (Eq a, Hashable a) => Var (HMap.HashMap a Int) -> a -> Action b 
 withProgress var file = actionBracket (f succ) (const $ f pred) . const
     where f shift = modifyVar_ var $ \x -> return (HMap.alter (\x -> Just (shift (fromMaybe 0 x))) file x)
 
+-- | Open an OpenTelemetry span around an action. Similar to opentelemetry's withSpan_, but specialized to Action
+withSpanAction_ :: Show k => k -> NormalizedFilePath -> Action a -> Action a
+withSpanAction_ key file action = actionBracket
+    ( do
+         span <- beginSpan (show key)
+         setTag span "File" (BS.pack $ fromNormalizedFilePath $ file)
+         return span
+    )
+    endSpan
+    (\_ -> action)
 
 defineEarlyCutoff
     :: IdeRule k v
     => (k -> NormalizedFilePath -> Action (Maybe BS.ByteString, IdeResult v))
     -> Rules ()
-defineEarlyCutoff op = addBuiltinRule noLint noIdentity $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> do
+defineEarlyCutoff op = addBuiltinRule noLint noIdentity $ \(Q (key, file)) (old :: Maybe BS.ByteString) mode -> withSpanAction_ key file $ do
     extras@ShakeExtras{state, inProgress} <- getShakeExtras
     -- don't do progress for GetFileExists, as there are lots of non-nodes for just that one key
     (if show key == "GetFileExists" then id else withProgress inProgress file) $ do
