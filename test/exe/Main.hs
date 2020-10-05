@@ -2237,6 +2237,7 @@ findDefinitionAndHoverTests = let
   cccL17 = Position 17 11  ;  docLink = [ExpectHoverText ["[Documentation](file:///"]]
   imported = Position 56 13 ; importedSig = getDocUri "Foo.hs" >>= \foo -> return [ExpectHoverText ["foo", "Foo", "Haddock"], mkL foo 5 0 5 3]
   reexported = Position 55 14 ; reexportedSig = getDocUri "Bar.hs" >>= \bar -> return [ExpectHoverText ["Bar", "Bar", "Haddock"], mkL bar 3 0 3 14]
+  thLocL57 = Position 57 10 ; thLoc = [ExpectHoverText ["Identity"]]
   in
   mkFindTests
   --      def    hover  look       expect
@@ -2282,6 +2283,7 @@ findDefinitionAndHoverTests = let
   , test  no     yes    cccL17     docLink       "Haddock html links"
   , testM yes    yes    imported   importedSig   "Imported symbol"
   , testM yes    yes    reexported reexportedSig "Imported symbol (reexported)"
+  , test  no     yes    thLocL57   thLoc         "TH Splice Hover"
   ]
   where yes, broken :: (TestTree -> Maybe TestTree)
         yes    = Just -- test should run and pass
